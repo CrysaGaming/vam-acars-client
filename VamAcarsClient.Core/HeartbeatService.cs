@@ -3,6 +3,8 @@ using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace VamAcarsClient.Core;
 
@@ -46,6 +48,7 @@ public sealed class HeartbeatService : IDisposable
     private readonly string _token;
     private readonly FlightContext _flightContext;
     private readonly TimeSpan _interval;
+    private readonly ILogger<HeartbeatService> _logger;
 
     private readonly ConcurrentQueue<HeartbeatRequest> _queue = new();
     private CancellationTokenSource? _cts;
@@ -82,7 +85,8 @@ public sealed class HeartbeatService : IDisposable
         SimConnectClient sim,
         string token,
         FlightContext flightContext,
-        TimeSpan? interval = null)
+        TimeSpan? interval = null,
+        ILogger<HeartbeatService>? logger = null)
     {
         _http = http ?? throw new ArgumentNullException(nameof(http));
         _sim = sim ?? throw new ArgumentNullException(nameof(sim));
@@ -91,12 +95,19 @@ public sealed class HeartbeatService : IDisposable
             : throw new ArgumentException("token required", nameof(token));
         _flightContext = flightContext ?? throw new ArgumentNullException(nameof(flightContext));
         _interval = interval ?? TimeSpan.FromSeconds(2);
+        // NullLogger fallback: callers that don't pass a logger get a
+        // no-op. Keeps the service usable from tests / minimal setups
+        // without forcing a logger-factory just to instantiate.
+        _logger = logger ?? NullLogger<HeartbeatService>.Instance;
     }
 
     /// <summary>Start the heartbeat loop. Idempotent.</summary>
     public void Start()
     {
         if (_loopTask is not null) return;
+        _logger.LogInformation(
+            "Heartbeat service starting (callsign={Callsign}, network={Network}, interval={Interval}s)",
+            _flightContext.Callsign, _flightContext.Network, _interval.TotalSeconds);
         _cts = new CancellationTokenSource();
         _loopTask = Task.Run(() => RunLoopAsync(_cts.Token));
     }
@@ -112,6 +123,7 @@ public sealed class HeartbeatService : IDisposable
         _loopTask = null;
         _cts?.Dispose();
         _cts = null;
+        _logger.LogInformation("Heartbeat service stopped.");
     }
 
     public int QueuedCount => _queue.Count;
@@ -152,6 +164,9 @@ public sealed class HeartbeatService : IDisposable
         // path — TryDequeue is O(1) on ConcurrentQueue.
         while (_queue.Count > MaxQueueDepth && _queue.TryDequeue(out _))
         {
+            _logger.LogWarning(
+                "Heartbeat queue at cap ({Cap}) — dropping oldest entry.",
+                MaxQueueDepth);
             HeartbeatFailed?.Invoke($"Queue voll — ältester Heartbeat verworfen.");
         }
     }
@@ -179,6 +194,10 @@ public sealed class HeartbeatService : IDisposable
             catch (Exception ex)
             {
                 // Network / DNS / timeout. Stop draining; retry next tick.
+                // Logged at Warning — recoverable, not a programmer error.
+                _logger.LogWarning(ex,
+                    "Heartbeat send failed (network). Queued={QueuedCount}. Will retry.",
+                    _queue.Count);
                 HeartbeatFailed?.Invoke($"Network-Fehler: {ex.Message}");
                 return;
             }
@@ -189,7 +208,13 @@ public sealed class HeartbeatService : IDisposable
                 try
                 {
                     var body = await response.Content.ReadFromJsonAsync<HeartbeatResponse>(ct);
-                    if (body is not null) HeartbeatSent?.Invoke(body);
+                    if (body is not null)
+                    {
+                        _logger.LogDebug(
+                            "Heartbeat sent OK. SessionId={SessionId}",
+                            body.SessionId);
+                        HeartbeatSent?.Invoke(body);
+                    }
                 }
                 catch
                 {
@@ -215,6 +240,8 @@ public sealed class HeartbeatService : IDisposable
 
             if (status == 401)
             {
+                _logger.LogWarning(
+                    "Token rejected by server (401). Stopping heartbeat, signaling re-pair.");
                 HeartbeatFailed?.Invoke("Token abgelehnt (401). Re-pair erforderlich.");
                 ReAuthRequired?.Invoke();
                 _cts?.Cancel(); // stop the loop
@@ -224,6 +251,9 @@ public sealed class HeartbeatService : IDisposable
             if (status >= 500)
             {
                 // Server transient. Retry next tick.
+                _logger.LogWarning(
+                    "Server error {Status} on heartbeat. Body={ErrorBody}. Will retry.",
+                    status, errorBody);
                 HeartbeatFailed?.Invoke($"Server-Fehler {status}: {errorBody}. Retry.");
                 return;
             }
@@ -231,8 +261,12 @@ public sealed class HeartbeatService : IDisposable
             // 4xx other than 401: payload is broken or rate-limited. Drop
             // this entry to avoid spinning on it. Body usually contains
             // the zod-validation issues — surfacing them makes debugging
-            // schema-mismatches a one-shot.
+            // schema-mismatches a one-shot. Logged at Error because a
+            // schema-mismatch is a client bug, not a transient condition.
             _queue.TryDequeue(out _);
+            _logger.LogError(
+                "Heartbeat rejected by server ({Status}). Body={ErrorBody}. Dropping entry.",
+                status, errorBody);
             HeartbeatFailed?.Invoke($"Heartbeat abgelehnt ({status}): {errorBody}");
         }
     }

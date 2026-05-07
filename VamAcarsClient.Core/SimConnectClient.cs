@@ -1,4 +1,6 @@
 ﻿using Microsoft.FlightSimulator.SimConnect;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using System.Reflection;
 using System.Runtime.InteropServices;
 
@@ -47,6 +49,15 @@ public sealed class SimConnectClient : IDisposable
     private CancellationTokenSource? _pumpCts;
     private readonly object _telemetryLock = new();
     private SimTelemetry? _latestTelemetry;
+    private readonly ILogger<SimConnectClient> _logger;
+
+    public SimConnectClient(ILogger<SimConnectClient>? logger = null)
+    {
+        // NullLogger fallback: keeps the parameterless construction
+        // pattern existing callers rely on, while opening the door for
+        // injection from the bootstrap.
+        _logger = logger ?? NullLogger<SimConnectClient>.Instance;
+    }
 
     /// <summary>
     /// Most recent telemetry snapshot received from MSFS, or null if
@@ -82,6 +93,8 @@ public sealed class SimConnectClient : IDisposable
     {
         if (_sc is not null)
             throw new InvalidOperationException("Already connected.");
+
+        _logger.LogInformation("SimConnect: opening connection to MSFS...");
 
         // IntPtr.Zero = no window-handle, SimConnect creates an internal
         // worker window. WM_USER_SIMCONNECT is the message-id it'll post
@@ -221,12 +234,20 @@ public sealed class SimConnectClient : IDisposable
             catch (COMException ex)
             {
                 // Connection died (sim crashed, user quit MSFS).
-                // Surface to caller, exit pump.
+                // Surface to caller, exit pump. Logged at Warning —
+                // expected in normal user-quit-MSFS flow.
+                _logger.LogWarning(
+                    "SimConnect connection lost (HRESULT=0x{HResult:X8}). Pump exiting.",
+                    ex.HResult);
                 ConnectionLost?.Invoke($"SimConnect-Verbindung verloren: 0x{ex.HResult:X8}");
                 return;
             }
             catch (Exception ex)
             {
+                // Unexpected — not a clean COM-disconnect. Logged at
+                // Error with stacktrace because this is a programming
+                // bug somewhere (struct mismatch, threading issue).
+                _logger.LogError(ex, "SimConnect pump-loop crashed unexpectedly.");
                 ConnectionLost?.Invoke($"Pump-Loop-Fehler: {ex.Message}");
                 return;
             }
@@ -252,22 +273,31 @@ public sealed class SimConnectClient : IDisposable
     private void OnRecvOpen(SimConnect _, SIMCONNECT_RECV_OPEN data)
     {
         // Connection-handshake completed. data.szApplicationName is
-        // "Microsoft Flight Simulator" or similar — useful for logging.
+        // "Microsoft Flight Simulator" or similar — log it so the
+        // file shows which sim variant the user is on.
+        _logger.LogInformation(
+            "SimConnect: handshake OK with {AppName} (build {Major}.{Minor})",
+            data.szApplicationName, data.dwApplicationVersionMajor, data.dwApplicationVersionMinor);
     }
 
     private void OnRecvQuit(SimConnect _, SIMCONNECT_RECV data)
     {
         // User quit MSFS. The pump will get COMException on next
-        // ReceiveMessage and surface ConnectionLost. We don't double-fire.
+        // ReceiveMessage and surface ConnectionLost. We don't double-fire
+        // the event but DO log the cleaner shutdown path so logs
+        // distinguish "user quit" from "connection crashed".
+        _logger.LogInformation("SimConnect: sim signaled quit.");
     }
 
     private void OnRecvException(SimConnect _, SIMCONNECT_RECV_EXCEPTION ex)
     {
         // SimConnect reports a usage-error (e.g., bad SimVar name).
-        // These are programmer-errors, not user-errors. Surface but
-        // don't crash — sim might still be usable.
+        // These are programmer-errors, not user-errors. Logged at
+        // Error because they indicate our data-definition is wrong.
         var exceptionType = (SIMCONNECT_EXCEPTION)ex.dwException;
-        Console.Error.WriteLine($"[SimConnect-Exception] {exceptionType} (sendID={ex.dwSendID})");
+        _logger.LogError(
+            "SimConnect API exception: {ExceptionType} (sendID={SendId}). Likely a SimVar definition issue.",
+            exceptionType, ex.dwSendID);
     }
 
     private void OnRecvSimobjectData(SimConnect _, SIMCONNECT_RECV_SIMOBJECT_DATA data)
@@ -288,6 +318,8 @@ public sealed class SimConnectClient : IDisposable
     {
         if (_sc is null) return;
 
+        _logger.LogInformation("SimConnect: closing connection.");
+
         _pumpCts?.Cancel();
         _pumpThread?.Interrupt();
         _pumpThread?.Join(TimeSpan.FromSeconds(2));
@@ -296,10 +328,12 @@ public sealed class SimConnectClient : IDisposable
         {
             _sc.Dispose();
         }
-        catch
+        catch (Exception ex)
         {
             // SimConnect can throw on dispose if the sim disappeared
-            // mid-shutdown. We don't care at this point.
+            // mid-shutdown. Logged at Debug — expected during normal
+            // user-quit-MSFS flow, not actionable.
+            _logger.LogDebug(ex, "SimConnect dispose threw (sim already gone — usually fine).");
         }
         _sc = null;
         _pumpThread = null;

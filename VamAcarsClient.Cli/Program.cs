@@ -1,6 +1,8 @@
 using System.Reflection;
 using System.Runtime.Loader;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
+using Serilog;
 using VamAcarsClient.Core;
 
 // ─── Assembly-Resolver für SimConnect ────────────────────────────────
@@ -62,6 +64,56 @@ var configBuilder = new ConfigurationBuilder()
 var configRoot = configBuilder.Build();
 var config = configRoot.Get<VamConfig>() ?? new VamConfig();
 
+// ─── Logging setup (Serilog) ─────────────────────────────────────────
+//
+// Serilog is configured via the "Serilog" section of appsettings.json.
+// File-sink path uses the {LogPath} placeholder which we substitute
+// here with %LOCALAPPDATA%\<LocalAppDataFolderName>\logs — same folder
+// family that already holds token.bin. Per-user, machine-local,
+// survives reboots and uninstalls (intentionally — log retention is
+// the user's call, not ours).
+//
+// Why we substitute manually: the appsettings.json bakes in a literal
+// "{LogPath}" string. Serilog.Settings.Configuration won't expand it.
+// We rewrite the config-value before building the logger.
+
+var logsDir = Path.Combine(
+    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+    config.Storage.LocalAppDataFolderName,
+    "logs");
+Directory.CreateDirectory(logsDir);
+
+// Replace {LogPath} placeholder in the loaded configuration. The key
+// path matches the JSON nesting: "Serilog:WriteTo:1:Args:path" — the
+// "1" is the second element of the WriteTo array (the File sink).
+foreach (var kv in configRoot.AsEnumerable())
+{
+    if (kv.Value is { } v && v.Contains("{LogPath}"))
+    {
+        configRoot[kv.Key] = v.Replace("{LogPath}", logsDir);
+    }
+}
+
+Log.Logger = new LoggerConfiguration()
+    .ReadFrom.Configuration(configRoot)
+    .CreateLogger();
+
+// Bridge Serilog to Microsoft.Extensions.Logging so the services that
+// take ILogger<T> can use it. dispose: false because we manually
+// flush/close Log.CloseAndFlush() at process-exit instead.
+using var loggerFactory = LoggerFactory.Create(builder =>
+{
+    builder.AddSerilog(Log.Logger, dispose: false);
+});
+
+// Catch-all: ensure file-sink flushes even if the process dies mid-write.
+AppDomain.CurrentDomain.ProcessExit += (_, _) => Log.CloseAndFlush();
+
+// Bootstrap-level logger for messages not specific to a service class.
+var bootstrapLogger = loggerFactory.CreateLogger("Bootstrap");
+bootstrapLogger.LogInformation(
+    "VamAcarsClient starting. LogDir={LogsDir}", logsDir);
+
 // ─── HttpClient setup ────────────────────────────────────────────────
 
 using var http = new HttpClient
@@ -97,8 +149,8 @@ var mode = Console.ReadLine()?.Trim().ToLowerInvariant();
 return mode switch
 {
     "1" => await RunPairingFlowAsync(http, tokenStore, config),
-    "2" => RunSimConnectFlow(),
-    "3" => await RunHeartbeatFlowAsync(http, tokenStore, config),
+    "2" => RunSimConnectFlow(loggerFactory),
+    "3" => await RunHeartbeatFlowAsync(http, tokenStore, config, loggerFactory),
     _ => 0,
 };
 
@@ -200,14 +252,14 @@ static async Task<int> RunPairingFlowAsync(HttpClient httpClient, TokenStore tok
 // Mode 2: SimConnect Read-Loop
 // ═════════════════════════════════════════════════════════════════════
 
-static int RunSimConnectFlow()
+static int RunSimConnectFlow(ILoggerFactory loggerFactory)
 {
     Console.WriteLine();
     Console.WriteLine("[…] Verbinde zu MSFS via SimConnect …");
     Console.WriteLine("    (MSFS muss bereits laufen. Hauptmenü oder im Flug — beides ok.)");
     Console.WriteLine();
 
-    using var sim = new SimConnectClient();
+    using var sim = new SimConnectClient(loggerFactory.CreateLogger<SimConnectClient>());
 
     sim.ConnectionLost += msg =>
     {
@@ -289,7 +341,7 @@ static int RunSimConnectFlow()
 // on the live-map at config.Vam.ApiBaseUrl/live with
 // dataSource=ACARS_CLIENT.
 
-static async Task<int> RunHeartbeatFlowAsync(HttpClient httpClient, TokenStore tokenStore, VamConfig config)
+static async Task<int> RunHeartbeatFlowAsync(HttpClient httpClient, TokenStore tokenStore, VamConfig config, ILoggerFactory loggerFactory)
 {
     Console.WriteLine();
 
@@ -348,7 +400,7 @@ static async Task<int> RunHeartbeatFlowAsync(HttpClient httpClient, TokenStore t
     // ─── SimConnect ───
     Console.WriteLine();
     Console.WriteLine("[…] Verbinde zu MSFS …");
-    using var sim = new SimConnectClient();
+    using var sim = new SimConnectClient(loggerFactory.CreateLogger<SimConnectClient>());
     try
     {
         sim.Connect();
@@ -367,7 +419,8 @@ static async Task<int> RunHeartbeatFlowAsync(HttpClient httpClient, TokenStore t
         sim,
         token,
         flightContext,
-        interval: TimeSpan.FromSeconds(config.Heartbeat.IntervalSeconds));
+        interval: TimeSpan.FromSeconds(config.Heartbeat.IntervalSeconds),
+        logger: loggerFactory.CreateLogger<HeartbeatService>());
 
     var sentCount = 0;
     var failedCount = 0;
