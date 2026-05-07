@@ -84,4 +84,37 @@ catch (Exception ex)
 Console.WriteLine();
 Console.WriteLine($"[✓] Erfolgreich gepaart als: {result.DisplayName}");
 Console.WriteLine($"[✓] Token gespeichert in %LOCALAPPDATA%\\{VamConfig.LocalAppDataFolderName}\\{VamConfig.TokenFileName}");
+
+// ─── Sanity-check: authenticated GET /api/acars/status ───────────────
+// Validates the full request-flow (auth header, server reachable,
+// token actually accepted on a non-public endpoint).
+
+Console.WriteLine();
+Console.WriteLine("[…] Status-Check …");
+var status = new StatusService(http);
+StatusResponse? statusInfo;
+try
+{
+    statusInfo = await status.FetchAsync(result.Token!);
+}
+catch (Exception ex)
+{
+    Console.WriteLine($"[!] Status-Check fehlgeschlagen: {ex.Message}");
+    Console.WriteLine("    Pairing war erfolgreich, aber Server unerreichbar für Status.");
+    return 0; // Pairing was the actual goal; status is bonus.
+}
+
+if (statusInfo is null)
+{
+    Console.WriteLine("[!] Token wurde abgelehnt (401). Ungewöhnlich nach erfolgreichem Pair.");
+    return 4;
+}
+
+var clockDriftSec = (DateTimeOffset.UtcNow - statusInfo.ServerTime).TotalSeconds;
+Console.WriteLine($"[✓] Status-Check OK.");
+Console.WriteLine($"    User:     {statusInfo.User.Name ?? statusInfo.User.Email}");
+Console.WriteLine($"    Airline:  {statusInfo.Airline?.Name ?? "<keine>"} ({statusInfo.Airline?.Icao ?? "—"})");
+Console.WriteLine($"    Network:  {statusInfo.PreferredNetwork}");
+Console.WriteLine($"    Drift:    {clockDriftSec:+0.00;-0.00;0.00}s (Server vs lokale Uhr)");
+
 return 0;
