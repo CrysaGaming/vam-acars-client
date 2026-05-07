@@ -192,6 +192,19 @@ public sealed class SimConnectClient : IDisposable
             SIMCONNECT_DATATYPE.STRING32,
             0.0f,
             SimConnect.SIMCONNECT_UNUSED);
+        // M3.8: Send the full aircraft title to the server so its
+        // type-resolver can pattern-match against rich strings like
+        // "Asobo A320neo Lufthansa" instead of the often-broken ATC
+        // MODEL string. STRING256 because real titles can run long.
+        // ORDER MATTERS — must be the last STRING field appended,
+        // matching the trailing position of AtcTitle in SimTelemetry.
+        sc.AddToDataDefinition(
+            DataDefinitionId.Telemetry,
+            "TITLE",
+            null,
+            SIMCONNECT_DATATYPE.STRING256,
+            0.0f,
+            SimConnect.SIMCONNECT_UNUSED);
 
         // Tell SimConnect the C# struct it should marshal into. Generic
         // type binds the C-side definition to our managed struct layout.

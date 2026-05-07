@@ -324,7 +324,15 @@ public sealed class HeartbeatService : IDisposable
                 // can't fix client-side.
                 Type = TruncateAt(t.AircraftType, 16),
                 Registration = TruncateAt(t.AircraftRegistration, 16),
-                Title = null, // could surface ATC TYPE here later
+                // M3.8: TITLE simvar (e.g. "Asobo A320neo Lufthansa") —
+                // sent so the server's aircraft-resolver can pattern-
+                // match against a rich string when ATC MODEL is junk.
+                // Server schema accepts max 120; AircraftTitle returns
+                // null for empty/whitespace which Zod treats as "absent"
+                // (matches our WhenWritingNull JsonOpts).
+                Title = t.AircraftTitle is null
+                    ? null
+                    : TruncateAt(t.AircraftTitle, 120),
             },
 
             Position = new HeartbeatPosition

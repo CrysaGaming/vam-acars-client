@@ -67,6 +67,23 @@ public struct SimTelemetry
     [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)]
     public string AtcId;
 
+    // ─── Aircraft TITLE (STRING256) — M3.8 ─────────────────────
+    // Full aircraft title from aircraft.cfg, e.g.
+    //   "Asobo A320neo Lufthansa D-AINY"
+    //   "FlyByWire A32NX"
+    //   "Cessna 172 Skyhawk Asobo Original"
+    // Often the most-reliable signal for type identification, especially
+    // when ATC MODEL leaks a localization-token like "ATCCOM.AC_MODEL".
+    // The server's aircraft-type resolver (M3.8) pattern-matches this
+    // first against its regex table.
+    //
+    // STRING256 chosen over STRING128: real titles routinely run 60-100
+    // chars; a developer-mode aircraft-folder name appended makes it
+    // longer still. 256 is comfortable headroom; the field is sent
+    // once per heartbeat so the wire-cost is irrelevant.
+    [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 256)]
+    public string AtcTitle;
+
     // ─── Convenience properties (not marshalled) ──────────────
     // Trim trailing nulls/whitespace and provide fallback for empty
     // values. Default-aircraft (no model loaded) returns "" from
@@ -77,6 +94,16 @@ public struct SimTelemetry
 
     public readonly string AircraftRegistration =>
         string.IsNullOrWhiteSpace(AtcId) ? "UNKN" : AtcId.Trim();
+
+    /// <summary>
+    /// Trimmed aircraft title or null. Unlike AircraftType/Registration
+    /// above this returns null rather than "UNKN" because the server
+    /// schema treats `aircraft.title` as `.optional()` — sending null
+    /// just omits the field entirely (Zod accepts), whereas "UNKN"
+    /// would feed pattern-matching a known-bad sentinel.
+    /// </summary>
+    public readonly string? AircraftTitle =>
+        string.IsNullOrWhiteSpace(AtcTitle) ? null : AtcTitle.Trim();
 }
 
 internal enum DataDefinitionId
