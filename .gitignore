@@ -1,0 +1,43 @@
+# .NET build output
+bin/
+obj/
+out/
+
+# User-specific
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+.vs/
+
+# Rider/VS Code
+.idea/
+.vscode/
+
+# Test results
+[Tt]est[Rr]esult*/
+[Bb]uild[Ll]og.*
+
+# NuGet
+*.nupkg
+*.snupkg
+.nuget/
+
+# Tooling
+*.pidb
+*.svclog
+*.scc
+
+# Publish output
+publish/
+*.[Pp]ublish.xml
+PublishProfiles/
+
+# Sensitive
+appsettings.Development.json
+*.pfx
+*.p12
+
+# OS
+.DS_Store
+Thumbs.db
