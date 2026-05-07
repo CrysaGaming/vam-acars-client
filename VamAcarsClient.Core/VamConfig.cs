@@ -1,29 +1,68 @@
-﻿namespace VamAcarsClient.Core;
+namespace VamAcarsClient.Core;
 
 /// <summary>
-/// Static configuration for the ACARS-client. Constants are baked into
-/// the build for now — no JSON config file in v1. Once we have multiple
-/// environments (production vam.kevindrack.de vs a future staging URL)
-/// we'll move this to a runtime-loaded JSON config.
+/// Runtime configuration for the ACARS client. Populated from
+/// appsettings.json + appsettings.Development.json by the bootstrap,
+/// or constructed with defaults for tests / fallback when no config
+/// file is present.
+///
+/// Kept as a simple POCO with init-only setters so it's bindable
+/// directly via Microsoft.Extensions.Configuration.Bind() and also
+/// trivially constructible in unit-tests:
+///
+///   var cfg = new VamConfig();              // production defaults
+///   var cfg = configuration.Get<VamConfig>(); // from JSON
+///
+/// We intentionally don't use the [Required] / IOptions&lt;T&gt; pattern
+/// from ASP.NET Core — for a single-process desktop app that's overkill.
+/// The config-load happens once at startup and the resulting object is
+/// passed by value to the consumers that need it.
 /// </summary>
-public static class VamConfig
+public sealed class VamConfig
 {
-    /// <summary>Production server. Cloudflared tunnel terminates here.</summary>
-    public const string ApiBaseUrl = "https://vam.kevindrack.de";
+    public VamSection Vam { get; init; } = new();
+    public StorageSection Storage { get; init; } = new();
+    public HeartbeatSection Heartbeat { get; init; } = new();
 
-    /// <summary>User-Agent header sent on every API request. Lets the
-    /// server log identify our client and version separately from
-    /// browsers and the bot.</summary>
-    public const string UserAgent = "VamAcarsClient/0.1 (.NET 10; Windows)";
+    public sealed class VamSection
+    {
+        /// <summary>Production server. Cloudflared tunnel terminates here.</summary>
+        public string ApiBaseUrl { get; init; } = "https://vam.kevindrack.de";
 
-    /// <summary>Path under %LOCALAPPDATA% where we store the encrypted
-    /// pairing-token. Per-user encryption via DPAPI means this folder
-    /// only contains opaque bytes — safe even if the file is copied
-    /// somewhere else (the data won't decrypt off this machine for
-    /// this user).</summary>
-    public const string LocalAppDataFolderName = "VamAcarsClient";
+        /// <summary>User-Agent header sent on every API request. Lets the
+        /// server log identify our client and version separately from
+        /// browsers and the bot.</summary>
+        public string UserAgent { get; init; } = "VamAcarsClient/0.1 (.NET 10; Windows)";
 
-    /// <summary>Filename of the encrypted token blob inside the local
-    /// app-data folder.</summary>
-    public const string TokenFileName = "token.bin";
+        /// <summary>HTTP client request timeout. 30s is generous for normal
+        /// roundtrips and tolerates Cloudflare cold-starts.</summary>
+        public int RequestTimeoutSeconds { get; init; } = 30;
+    }
+
+    public sealed class StorageSection
+    {
+        /// <summary>Path under %LOCALAPPDATA% where we store the encrypted
+        /// pairing-token. Per-user encryption via DPAPI means this folder
+        /// only contains opaque bytes — safe even if the file is copied
+        /// somewhere else (the data won't decrypt off this machine for
+        /// this user).</summary>
+        public string LocalAppDataFolderName { get; init; } = "VamAcarsClient";
+
+        /// <summary>Filename of the encrypted token blob inside the local
+        /// app-data folder.</summary>
+        public string TokenFileName { get; init; } = "token.bin";
+    }
+
+    public sealed class HeartbeatSection
+    {
+        /// <summary>How often we POST to /api/acars/heartbeat. 2s is the
+        /// sweet spot — fast enough for live-map smoothness, slow enough
+        /// to not hammer the server.</summary>
+        public int IntervalSeconds { get; init; } = 2;
+
+        /// <summary>How many heartbeats to keep buffered when the server
+        /// is unreachable. At 2s interval, 100 entries = ~3min of offline
+        /// tolerance. Beyond that, oldest is dropped.</summary>
+        public int MaxQueueDepth { get; init; } = 100;
+    }
 }

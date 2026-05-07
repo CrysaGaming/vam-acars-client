@@ -28,6 +28,9 @@ out/
 *.svclog
 *.scc
 
+# VS NuGet-update transient backups
+*.Backup.tmp
+
 # Publish output
 publish/
 *.[Pp]ublish.xml

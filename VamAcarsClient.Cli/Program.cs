@@ -1,5 +1,6 @@
-﻿using System.Reflection;
+using System.Reflection;
 using System.Runtime.Loader;
+using Microsoft.Extensions.Configuration;
 using VamAcarsClient.Core;
 
 // ─── Assembly-Resolver für SimConnect ────────────────────────────────
@@ -33,19 +34,57 @@ AssemblyLoadContext.Default.Resolving += (context, assemblyName) =>
     return context.LoadFromAssemblyPath(dllPath);
 };
 
+// ─── Configuration loading ───────────────────────────────────────────
+//
+// Order of precedence (later wins):
+//   1. appsettings.json (production defaults, checked into git)
+//   2. appsettings.Development.json (local overrides, git-ignored)
+//
+// AppContext.BaseDirectory is the folder the .exe runs from — same
+// directory the build copies appsettings.json into via the csproj
+// CopyToOutputDirectory rules.
+//
+// reloadOnChange:false because we don't watch the file for changes
+// mid-run. Settings only matter at startup; restart to apply changes.
+// Keeps the loop simpler than dealing with IOptionsMonitor /
+// change-notifications.
+//
+// Env-var support is intentionally not wired (would require an
+// additional NuGet package for a feature we don't need yet). If we
+// later want CI-overrides, add Microsoft.Extensions.Configuration
+// .EnvironmentVariables and chain .AddEnvironmentVariables() here.
+
+var configBuilder = new ConfigurationBuilder()
+    .SetBasePath(AppContext.BaseDirectory)
+    .AddJsonFile("appsettings.json", optional: true, reloadOnChange: false)
+    .AddJsonFile("appsettings.Development.json", optional: true, reloadOnChange: false);
+
+var configRoot = configBuilder.Build();
+var config = configRoot.Get<VamConfig>() ?? new VamConfig();
+
 // ─── HttpClient setup ────────────────────────────────────────────────
 
 using var http = new HttpClient
 {
-    BaseAddress = new Uri(VamConfig.ApiBaseUrl),
-    Timeout = TimeSpan.FromSeconds(30),
+    BaseAddress = new Uri(config.Vam.ApiBaseUrl),
+    Timeout = TimeSpan.FromSeconds(config.Vam.RequestTimeoutSeconds),
 };
-http.DefaultRequestHeaders.UserAgent.ParseAdd(VamConfig.UserAgent);
+http.DefaultRequestHeaders.UserAgent.ParseAdd(config.Vam.UserAgent);
+
+var tokenStore = new TokenStore(config);
 
 // ─── Mode selection ──────────────────────────────────────────────────
 
 Console.WriteLine("=== VAM ACARS Client — Dev Console ===");
 Console.WriteLine();
+
+// Show effective config so dev-mode mistakes (e.g., pointing at the
+// wrong server) are visible upfront. Don't dump the full object —
+// only the values that affect runtime behavior visibly.
+Console.WriteLine($"Server:    {config.Vam.ApiBaseUrl}");
+Console.WriteLine($"Heartbeat: alle {config.Heartbeat.IntervalSeconds}s, queue cap {config.Heartbeat.MaxQueueDepth}");
+Console.WriteLine();
+
 Console.WriteLine("Was möchtest du testen?");
 Console.WriteLine("  [1] Pairing + Status (Server-Roundtrip)");
 Console.WriteLine("  [2] SimConnect Read-Loop (Telemetrie aus MSFS)");
@@ -57,9 +96,9 @@ var mode = Console.ReadLine()?.Trim().ToLowerInvariant();
 
 return mode switch
 {
-    "1" => await RunPairingFlowAsync(http),
+    "1" => await RunPairingFlowAsync(http, tokenStore, config),
     "2" => RunSimConnectFlow(),
-    "3" => await RunHeartbeatFlowAsync(http),
+    "3" => await RunHeartbeatFlowAsync(http, tokenStore, config),
     _ => 0,
 };
 
@@ -67,9 +106,9 @@ return mode switch
 // Mode 1: Pairing + Status
 // ═════════════════════════════════════════════════════════════════════
 
-static async Task<int> RunPairingFlowAsync(HttpClient httpClient)
+static async Task<int> RunPairingFlowAsync(HttpClient httpClient, TokenStore tokenStore, VamConfig config)
 {
-    var existingToken = TokenStore.TryLoad();
+    var existingToken = tokenStore.TryLoad();
     if (existingToken is not null)
     {
         Console.WriteLine($"[i] Bereits gepaart. Token vorhanden ({existingToken.Length} chars).");
@@ -79,7 +118,7 @@ static async Task<int> RunPairingFlowAsync(HttpClient httpClient)
     }
 
     Console.WriteLine();
-    Console.WriteLine("1. Öffne https://vam.kevindrack.de/settings");
+    Console.WriteLine($"1. Öffne {config.Vam.ApiBaseUrl}/settings");
     Console.WriteLine("2. Scroll zur 'ACARS-Client'-Sektion");
     Console.WriteLine("3. Klicke 'Pairing-Code generieren'");
     Console.WriteLine("4. Tippe den Code unten ein (Format: XXX-XXX-XXX)");
@@ -115,7 +154,7 @@ static async Task<int> RunPairingFlowAsync(HttpClient httpClient)
 
     try
     {
-        TokenStore.Save(result.Token!);
+        tokenStore.Save(result.Token!);
     }
     catch (Exception ex)
     {
@@ -126,7 +165,7 @@ static async Task<int> RunPairingFlowAsync(HttpClient httpClient)
 
     Console.WriteLine();
     Console.WriteLine($"[✓] Erfolgreich gepaart als: {result.DisplayName}");
-    Console.WriteLine($"[✓] Token gespeichert in %LOCALAPPDATA%\\{VamConfig.LocalAppDataFolderName}\\{VamConfig.TokenFileName}");
+    Console.WriteLine($"[✓] Token gespeichert in %LOCALAPPDATA%\\{config.Storage.LocalAppDataFolderName}\\{config.Storage.TokenFileName}");
 
     Console.WriteLine();
     Console.WriteLine("[…] Status-Check …");
@@ -246,15 +285,16 @@ static int RunSimConnectFlow()
 // Mode 3: Live-Heartbeat (full integration test)
 // ═════════════════════════════════════════════════════════════════════
 // Loads stored token, connects SimConnect, sends heartbeats to the
-// server every 2s. Pilot should appear on the live-map at
-// vam.kevindrack.de with dataSource=ACARS_CLIENT.
+// server every config.Heartbeat.IntervalSeconds. Pilot should appear
+// on the live-map at config.Vam.ApiBaseUrl/live with
+// dataSource=ACARS_CLIENT.
 
-static async Task<int> RunHeartbeatFlowAsync(HttpClient httpClient)
+static async Task<int> RunHeartbeatFlowAsync(HttpClient httpClient, TokenStore tokenStore, VamConfig config)
 {
     Console.WriteLine();
 
     // ─── Token check ───
-    var token = TokenStore.TryLoad();
+    var token = tokenStore.TryLoad();
     if (token is null)
     {
         Console.WriteLine("[X] Kein Token gespeichert. Erst Mode 1 (Pairing) durchlaufen.");
@@ -327,7 +367,7 @@ static async Task<int> RunHeartbeatFlowAsync(HttpClient httpClient)
         sim,
         token,
         flightContext,
-        interval: TimeSpan.FromSeconds(2));
+        interval: TimeSpan.FromSeconds(config.Heartbeat.IntervalSeconds));
 
     var sentCount = 0;
     var failedCount = 0;
@@ -349,20 +389,18 @@ static async Task<int> RunHeartbeatFlowAsync(HttpClient httpClient)
     heartbeat.ReAuthRequired += () =>
     {
         reAuthRequired = true;
-        TokenStore.Clear();
+        tokenStore.Clear();
         stopCts.Cancel();
     };
 
     Console.WriteLine();
     Console.WriteLine($"[✓] Heartbeat startet (Callsign: {callsign}, Network: {network}).");
-    Console.WriteLine("    Polle MSFS @ 1Hz, sende an Server @ 2s. Strg+C zum Beenden.");
-    Console.WriteLine($"    Live-Map: https://vam.kevindrack.de/live");
+    Console.WriteLine($"    Polle MSFS @ 1Hz, sende an Server @ {config.Heartbeat.IntervalSeconds}s. Strg+C zum Beenden.");
+    Console.WriteLine($"    Live-Map: {config.Vam.ApiBaseUrl}/live");
     Console.WriteLine();
 
     heartbeat.Start();
 
-    // Periodically request SimConnect telemetry. Heartbeat-loop reads
-    // sim.LatestTelemetry on its own schedule.
     Console.CancelKeyPress += (_, e) =>
     {
         e.Cancel = true;

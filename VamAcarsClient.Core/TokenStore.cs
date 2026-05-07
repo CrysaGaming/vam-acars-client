@@ -1,4 +1,4 @@
-﻿using System.Security.Cryptography;
+using System.Security.Cryptography;
 
 namespace VamAcarsClient.Core;
 
@@ -13,7 +13,7 @@ namespace VamAcarsClient.Core;
 /// side, no cleartext token sitting on disk.
 ///
 /// File location:
-///   %LOCALAPPDATA%\VamAcarsClient\token.bin
+///   %LOCALAPPDATA%\&lt;LocalAppDataFolderName&gt;\&lt;TokenFileName&gt;
 /// Roaming-disabled (LocalApplicationData, not ApplicationData) because
 /// the encrypted blob is machine-bound anyway — syncing it via OneDrive
 /// or roaming-profile would just produce a useless copy.
@@ -21,27 +21,40 @@ namespace VamAcarsClient.Core;
 /// Threading: file-IO is synchronous. The token is written once at pair-
 /// time and read once at startup, so async would only add complexity.
 /// If we ever rotate tokens mid-session that decision can be revisited.
+///
+/// HISTORICAL NOTE: this used to be a static class with hardcoded paths
+/// from VamConfig. Refactored to instance-based when M3.5 introduced
+/// runtime-loaded configuration — VamConfig is now data, not constants,
+/// so static methods couldn't reach it without going through a global,
+/// which is hostile to testing.
 /// </summary>
-public static class TokenStore
+public sealed class TokenStore
 {
+    private readonly VamConfig _config;
+
+    public TokenStore(VamConfig config)
+    {
+        _config = config ?? throw new ArgumentNullException(nameof(config));
+    }
+
     /// <summary>
     /// Resolve the absolute path to the token blob. Creates the parent
     /// directory if missing — first-time pair on a fresh machine needs
     /// to write before the folder exists.
     /// </summary>
-    private static string GetTokenPath()
+    private string GetTokenPath()
     {
         var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-        var folder = Path.Combine(localAppData, VamConfig.LocalAppDataFolderName);
+        var folder = Path.Combine(localAppData, _config.Storage.LocalAppDataFolderName);
         Directory.CreateDirectory(folder); // no-op if already exists
-        return Path.Combine(folder, VamConfig.TokenFileName);
+        return Path.Combine(folder, _config.Storage.TokenFileName);
     }
 
     /// <summary>
     /// Encrypt and persist the bearer-token. Overwrites any existing
     /// token-file — used both for first-pair and re-pair (token rotation).
     /// </summary>
-    public static void Save(string token)
+    public void Save(string token)
     {
         if (string.IsNullOrWhiteSpace(token))
             throw new ArgumentException("token must not be empty", nameof(token));
@@ -67,7 +80,7 @@ public static class TokenStore
     /// (corrupted file, copied from another machine/user). Caller treats
     /// null as "not paired, prompt for pairing-code".
     /// </summary>
-    public static string? TryLoad()
+    public string? TryLoad()
     {
         var path = GetTokenPath();
         if (!File.Exists(path)) return null;
@@ -102,7 +115,7 @@ public static class TokenStore
     /// (Settings → "Disconnect ACARS"). Idempotent — safe to call when
     /// no token exists.
     /// </summary>
-    public static void Clear()
+    public void Clear()
     {
         var path = GetTokenPath();
         if (File.Exists(path))
