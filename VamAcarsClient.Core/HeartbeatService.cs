@@ -213,6 +213,19 @@ public sealed class HeartbeatService : IDisposable
                         _logger.LogDebug(
                             "Heartbeat sent OK. SessionId={SessionId}",
                             body.SessionId);
+
+                        // Log phase transitions explicitly. Useful in the
+                        // file-log to pinpoint exactly when the server's
+                        // state-machine ticked from one phase to the next
+                        // — particularly handy for tuning Welle 9's
+                        // detection thresholds.
+                        if (body.PhaseChanged && body.CurrentPhase is not null)
+                        {
+                            _logger.LogInformation(
+                                "Phase change: {Phase} (source={Source}, sessionId={SessionId})",
+                                body.CurrentPhase, body.PhaseSource, body.SessionId);
+                        }
+
                         HeartbeatSent?.Invoke(body);
                     }
                 }
@@ -471,4 +484,45 @@ public sealed class HeartbeatResponse
 {
     [JsonPropertyName("ok")] public bool Ok { get; init; }
     [JsonPropertyName("sessionId")] public string? SessionId { get; init; }
+
+    // ─── Phase-echo (M3.7 / Welle 9 Phase 5) ─────────────────────────
+    // Server reports back which phase it has resolved for this session
+    // after processing this heartbeat. Lets the client surface phase
+    // info in its UI without running its own detector. See server
+    // docstring at apps/web/.../heartbeat/route.ts for semantics.
+
+    /// <summary>
+    /// Server's resolved phase after this heartbeat — one of the
+    /// FlightPhase enum values: PreFlight, Pushback, Taxi, Takeoff,
+    /// Climb, Cruise, Descent, Approach, Landing, TaxiIn, BlockOn.
+    /// Modeled as string (not C# enum) so unknown values from a
+    /// future server-version don't break parsing.
+    /// </summary>
+    [JsonPropertyName("currentPhase")] public string? CurrentPhase { get; init; }
+
+    /// <summary>
+    /// ISO-8601 UTC timestamp of when the current phase began. Lets
+    /// the client show "in Climb for 2:34". May be null if the
+    /// session has never seen a phase transition (defensive — should
+    /// be set in practice from the very first heartbeat onward).
+    /// </summary>
+    [JsonPropertyName("currentPhaseEnteredAt")] public string? CurrentPhaseEnteredAt { get; init; }
+
+    /// <summary>
+    /// True iff *this* heartbeat caused the phase to transition.
+    /// Useful for clients that want to highlight transitions (e.g.,
+    /// log a "Phase: PreFlight → Taxi" line) without tracking the
+    /// previous value themselves.
+    /// </summary>
+    [JsonPropertyName("phaseChanged")] public bool PhaseChanged { get; init; }
+
+    /// <summary>
+    /// Which side decided the phase. "client" = client sent `phase`
+    /// and server respected it; "server" = server's state-machine
+    /// determined it from telemetry. Helps debug "why did the server
+    /// pick X?" — at the moment we always send phase=null so this
+    /// will always be "server", but the field will matter once we
+    /// optionally let users override mid-flight.
+    /// </summary>
+    [JsonPropertyName("phaseSource")] public string? PhaseSource { get; init; }
 }

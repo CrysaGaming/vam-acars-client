@@ -425,11 +425,37 @@ static async Task<int> RunHeartbeatFlowAsync(HttpClient httpClient, TokenStore t
     var sentCount = 0;
     var failedCount = 0;
     string? lastSessionId = null;
+    // Phase-echo tracking (M3.7). Server reports phase in every heartbeat
+    // response — we cache the latest values so the periodic status-line
+    // can include "phase=Cruise (server, 0:42)" without re-fetching.
+    string? lastPhase = null;
+    string? lastPhaseSource = null;
+    DateTimeOffset? lastPhaseEnteredAt = null;
 
     heartbeat.HeartbeatSent += response =>
     {
         sentCount++;
         lastSessionId = response.SessionId;
+
+        if (response.CurrentPhase is not null)
+        {
+            // On a phase transition, print a banner that punches through
+            // the regular status-line cadence so it's visible in the
+            // Console scrollback. The Phase-Change INF log line in the
+            // file is independent — this is the user-facing UI cue.
+            if (response.PhaseChanged && response.CurrentPhase != lastPhase)
+            {
+                Console.WriteLine(
+                    $"[{DateTime.Now:HH:mm:ss}] >>> Phase: {lastPhase ?? "—"} → {response.CurrentPhase} (source: {response.PhaseSource ?? "?"})");
+            }
+            lastPhase = response.CurrentPhase;
+            lastPhaseSource = response.PhaseSource;
+        }
+        if (response.CurrentPhaseEnteredAt is not null
+            && DateTimeOffset.TryParse(response.CurrentPhaseEnteredAt, out var entered))
+        {
+            lastPhaseEnteredAt = entered;
+        }
     };
     heartbeat.HeartbeatFailed += msg =>
     {
@@ -474,12 +500,36 @@ static async Task<int> RunHeartbeatFlowAsync(HttpClient httpClient, TokenStore t
             var t = sim.LatestTelemetry;
             if (t is { } tel)
             {
+                // Phase block — built lazily, only when the server has
+                // already echoed a phase to us. Format:
+                //   no phase yet         →  ""
+                //   phase, no enteredAt  →  " | phase=Cruise(server)"
+                //   phase + enteredAt    →  " | phase=Cruise(server,0:42)"
+                // Time-in-phase rolls from m:ss to h:mm:ss after 1h so
+                // long-haul cruise still fits without overflowing.
+                var phaseBlock = "";
+                if (lastPhase is not null)
+                {
+                    string suffix = lastPhaseSource ?? "?";
+                    if (lastPhaseEnteredAt is { } enteredAt)
+                    {
+                        var dur = DateTimeOffset.UtcNow - enteredAt;
+                        if (dur < TimeSpan.Zero) dur = TimeSpan.Zero;
+                        var durFmt = dur.TotalHours >= 1
+                            ? dur.ToString(@"h\:mm\:ss")
+                            : dur.ToString(@"m\:ss");
+                        suffix = $"{suffix},{durFmt}";
+                    }
+                    phaseBlock = $" | phase={lastPhase}({suffix})";
+                }
+
                 Console.WriteLine(
                     $"[{now:HH:mm:ss}] " +
                     $"sent={sentCount} failed={failedCount} queued={heartbeat.QueuedCount} | " +
                     $"{tel.LatitudeDeg:F4}°,{tel.LongitudeDeg:F4}° " +
                     $"Alt:{tel.AltitudeFt:F0}ft GS:{tel.GroundSpeedKts:F0}kts " +
-                    $"OnGnd:{(tel.OnGround > 0.5 ? "Y" : "N")}");
+                    $"OnGnd:{(tel.OnGround > 0.5 ? "Y" : "N")}" +
+                    phaseBlock);
             }
             lastStatusLine = now;
         }
