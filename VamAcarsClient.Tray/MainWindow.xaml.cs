@@ -1,21 +1,26 @@
 using System.ComponentModel;
 using System.Windows;
+using VamAcarsClient.Core;
 
 namespace VamAcarsClient.Tray;
 
 /// <summary>
 /// Status-window code-behind. Most of the UI logic lives in the XAML
-/// data-bindings against <see cref="Models.AcarsClientState"/>. The
-/// only behavioural quirk this class adds: closing via the X button
-/// hides the window instead of disposing it, so the tray-icon click
-/// can simply re-show the existing instance with all its state intact.
+/// data-bindings against <see cref="Models.AcarsClientState"/>. This
+/// class adds two behaviours that bindings can't express cleanly:
 ///
-/// Why hide-instead-of-close: the alternative (re-creating the window
-/// every time) loses any user-side state — scroll position, expand/
-/// collapse-state of future cards, copy-paste selections, etc. Tray-
-/// apps universally do hide-on-close, so users expect this behaviour.
-/// The actual app-shutdown happens via the tray Exit menu, not the
-/// window's X button.
+///   1. Closing via the X button hides the window instead of disposing
+///      it (so the tray-click can re-open it with state intact).
+///
+///   2. The Connect/Disconnect button click-handler reads the form
+///      fields, builds a <see cref="FlightContext"/>, and drives
+///      <see cref="App.Service"/> Start/Stop.
+///
+/// Why hide-instead-of-close: re-creating the window every time would
+/// lose user-side state (scroll, selections) and force the bindings
+/// to re-evaluate from scratch. Tray-apps universally do hide-on-close
+/// — users expect this. The actual app-shutdown happens via the tray
+/// Exit menu, not the window's X button.
 /// </summary>
 public partial class MainWindow : Window
 {
@@ -41,5 +46,65 @@ public partial class MainWindow : Window
         e.Cancel = true;
         Hide();
         base.OnClosing(e);
+    }
+
+    /// <summary>
+    /// Connect/Disconnect button click. Toggles based on the service's
+    /// current IsRunning state (NOT on the button's visual label, which
+    /// can briefly lag the actual state during transition animations).
+    ///
+    /// Disable the button for the duration of the transition so a
+    /// rapid-fire double-click can't kick off two Start attempts. The
+    /// PrimaryButton style already disables itself on
+    /// ConnectionStatus=Connecting via DataTrigger, but the trigger
+    /// fires AFTER StartAsync's first SetState arrives, leaving a
+    /// few-ms window where a fast click could race in. Hard-disabling
+    /// in code closes that race.
+    /// </summary>
+    private async void OnConnectClick(object sender, RoutedEventArgs e)
+    {
+        var app = (App)Application.Current;
+        var service = app.Service;
+        if (service is null) return; // app not fully booted; shouldn't happen post-OnStartup
+
+        ConnectButton.IsEnabled = false;
+        try
+        {
+            if (service.IsRunning)
+            {
+                await service.StopAsync();
+            }
+            else
+            {
+                // Read form fields. TextBox.Text is never null for an
+                // initialised TextBox, but trim defensively. Empty
+                // ICAO fields are valid (free-flight without a flight
+                // plan); we map "" → null for the FlightContext POCO.
+                var flightContext = new FlightContext
+                {
+                    Callsign = string.IsNullOrWhiteSpace(CallsignBox.Text)
+                        ? "NGN001"  // last-resort default; UI shouldn't allow empty in practice
+                        : CallsignBox.Text.Trim().ToUpperInvariant(),
+                    Network = string.IsNullOrWhiteSpace(NetworkBox.Text)
+                        ? "Offline"
+                        : NetworkBox.Text.Trim(),
+                    DepartureIcao = string.IsNullOrWhiteSpace(DeparturBox.Text)
+                        ? null
+                        : DeparturBox.Text.Trim().ToUpperInvariant(),
+                    ArrivalIcao = string.IsNullOrWhiteSpace(ArrivalBox.Text)
+                        ? null
+                        : ArrivalBox.Text.Trim().ToUpperInvariant(),
+                };
+                await service.StartAsync(flightContext);
+            }
+        }
+        finally
+        {
+            // Re-enable unless the style says we should stay disabled
+            // (Connecting state). PrimaryButton's DataTrigger handles
+            // the visual; we just need to clear our hard-disable so
+            // future state transitions can re-style.
+            ConnectButton.IsEnabled = true;
+        }
     }
 }

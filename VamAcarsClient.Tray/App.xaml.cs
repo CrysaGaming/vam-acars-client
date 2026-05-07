@@ -1,4 +1,5 @@
 using System.IO;
+using System.Net.Http;
 using System.Reflection;
 using System.Runtime.Loader;
 using System.Windows;
@@ -19,18 +20,18 @@ namespace VamAcarsClient.Tray;
 /// surface; <see cref="MainWindow"/> is opened on demand.
 ///
 /// Lifecycle:
-///   OnStartup → load config → init Serilog → create state →
-///   instantiate tray icon (kept on a field to prevent GC) → return.
-///   Window stays hidden. App keeps running until <see cref="OnExitClick"/>
-///   triggers Application.Current.Shutdown(), which fires OnExit.
+///   OnStartup → load config → init Serilog → create state +
+///   AcarsClientService → instantiate tray icon (kept on a field to
+///   prevent GC) → return. Window stays hidden. App keeps running
+///   until <see cref="OnExitClick"/> triggers Application.Current.
+///   Shutdown(), which fires OnExit.
 ///
-/// What this file does NOT do (yet, deferred to next M4 session):
-///   - Wire up <see cref="SimConnectClient"/> + <see cref="HeartbeatService"/>
-///     to <see cref="AcarsClientState"/>. The state currently shows a
-///     static "skeleton — not connected" placeholder.
+/// What this file does NOT do (yet, deferred to a later session):
 ///   - Auto-start with Windows (registry HKCU\…\Run integration).
 ///   - Show pairing UI inside the window. For now the user pairs via
 ///     the Cli in Mode 1; the tray-app reads the same TokenStore.
+///   - Persist last-used FlightContext to disk so the user doesn't
+///     re-enter callsign/dep/arr every restart.
 /// </summary>
 public partial class App : Application
 {
@@ -55,6 +56,29 @@ public partial class App : Application
     private ILogger<App>? _logger;
 
     /// <summary>
+    /// Single HttpClient owned by the App for the lifetime of the
+    /// process. Reused by AcarsClientService (which only borrows it,
+    /// doesn't own it) so we don't churn DNS/TCP-pool state every
+    /// time the user clicks Connect/Disconnect. Disposed in OnExit.
+    /// </summary>
+    private HttpClient? _http;
+
+    /// <summary>
+    /// Single TokenStore — same instance used for the startup probe
+    /// AND handed off to AcarsClientService. Reusing the instance
+    /// means both paths share any cached state (currently none, but
+    /// future caching wouldn't accidentally diverge).
+    /// </summary>
+    private TokenStore? _tokenStore;
+
+    /// <summary>
+    /// Heartbeat-lifecycle owner. Created once in OnStartup, reused
+    /// across Start/Stop cycles. Exposed via <see cref="Service"/> so
+    /// MainWindow's Connect/Disconnect button can drive it.
+    /// </summary>
+    private AcarsClientService? _acarsService;
+
+    /// <summary>
     /// Observable state that powers both the tray-menu Status row and
     /// the MainWindow's data-bindings. Single source of truth — when
     /// the heartbeat service updates fields, both surfaces re-render.
@@ -62,6 +86,14 @@ public partial class App : Application
     public AcarsClientState State { get; } = new();
 
     public VamConfig Config { get; private set; } = new();
+
+    /// <summary>
+    /// Public handle for MainWindow code-behind to drive Start/Stop.
+    /// Accessed via <c>((App)Application.Current).Service</c>. Null
+    /// before OnStartup completes; non-null thereafter for the
+    /// lifetime of the app.
+    /// </summary>
+    public AcarsClientService? Service => _acarsService;
 
     protected override void OnStartup(StartupEventArgs e)
     {
@@ -125,17 +157,18 @@ public partial class App : Application
 
         // ─── State seeding ─────────────────────────────────────────────
         State.ServerUrl = Config.Vam.ApiBaseUrl;
-        State.StatusMessage = "Skeleton — Heartbeat-Service noch nicht verdrahtet";
+        State.StatusMessage = "Bereit. Klicke 'Verbinden' im Status-Fenster.";
         State.ConnectionStatus = ConnectionStatus.Disconnected;
 
         // Token-presence check: poke the existing TokenStore that the
-        // Cli writes to. We don't load/decrypt the token here (no need —
-        // we're not making API calls in skeleton mode), just check
-        // existence so the UI can show "paired"/"not paired".
+        // Cli writes to. We don't load/decrypt the token here (no API
+        // call yet) — just check existence so the UI can show
+        // "paired"/"not paired". The same _tokenStore instance is
+        // reused later by AcarsClientService to load the actual token.
+        _tokenStore = new TokenStore(Config);
         try
         {
-            var tokenStore = new TokenStore(Config);
-            State.HasToken = tokenStore.TryLoad() is not null;
+            State.HasToken = _tokenStore.TryLoad() is not null;
         }
         catch (Exception ex)
         {
@@ -143,14 +176,58 @@ public partial class App : Application
             State.HasToken = false;
         }
 
+        // ─── HttpClient + AcarsClientService ──────────────────────────
+        // Single HttpClient for the process. AcarsClientService borrows
+        // it (doesn't own it) so we can recycle Start/Stop without
+        // tearing down the connection pool. Mirrors the Cli's pattern
+        // where the same HttpClient is constructed once in Program.cs
+        // and threaded through every mode.
+        _http = new HttpClient
+        {
+            BaseAddress = new Uri(Config.Vam.ApiBaseUrl),
+            Timeout = TimeSpan.FromSeconds(Config.Vam.RequestTimeoutSeconds),
+        };
+        _http.DefaultRequestHeaders.UserAgent.ParseAdd(Config.Vam.UserAgent);
+
+        // Service is built last because it needs the dispatcher, which
+        // is only valid once the Application has fully constructed
+        // itself. OnStartup runs after the dispatcher is ready, so
+        // we're safe here. Dispatcher.CurrentDispatcher == this app's
+        // UI thread dispatcher.
+        _acarsService = new AcarsClientService(
+            _http,
+            _tokenStore,
+            Config,
+            _loggerFactory!,
+            State,
+            Dispatcher);
+
         // ─── Tray icon instantiation ──────────────────────────────────
         // Pull the XAML-declared icon out of Application.Resources and
-        // pin it to a field. The TaskbarIcon's constructor side-effect
-        // is what actually creates the Win32 NOTIFYICONDATA — it
-        // happens during XAML parsing inside FindResource.
+        // pin it to a field. FindResource alone constructs the
+        // TaskbarIcon WPF object but does NOT register the Win32
+        // NOTIFYICONDATA — H.NotifyIcon's lazy-create path doesn't
+        // reliably trigger under WPF's app-lifetime resource
+        // pattern, leaving the icon invisible despite the WPF object
+        // being live. ForceCreate() is the documented escape hatch
+        // and forces the Shell_NotifyIconW registration immediately.
+        // Without this call the icon never shows up in the tray.
         _trayIcon = (TaskbarIcon)FindResource("VamTrayIcon");
+        try
+        {
+            _trayIcon.ForceCreate(enablesEfficiencyMode: false);
+        }
+        catch (Exception ex)
+        {
+            // Log loudly but don't abort startup — the rest of the app
+            // (status window, heartbeat service) still functions; the
+            // user just won't have a tray-click affordance to reach it.
+            _logger.LogError(ex, "TaskbarIcon.ForceCreate() threw — Shell_NotifyIcon registration failed");
+        }
 
-        _logger.LogInformation("Tray icon initialized. Token present: {HasToken}", State.HasToken);
+        _logger.LogInformation(
+            "Tray icon initialized. Token present: {HasToken}, Service ready",
+            State.HasToken);
     }
 
     /// <summary>
@@ -206,6 +283,22 @@ public partial class App : Application
     protected override void OnExit(ExitEventArgs e)
     {
         _logger?.LogInformation("VamAcarsClient.Tray shutting down");
+
+        // Service first — if it's still running, kick the cancellation
+        // tokens so the SimConnect poll-loop and HeartbeatService stop
+        // scheduling new work. Dispose() is best-effort sync teardown
+        // (we can't await StopAsync from a sync OnExit). Any in-flight
+        // heartbeat task may outlive this by milliseconds; the OS reaps
+        // it at process-exit.
+        _acarsService?.Dispose();
+        _acarsService = null;
+
+        // HttpClient AFTER the service so any final in-flight request
+        // the heartbeat-loop kicked off has a chance to complete or
+        // fail cleanly against a still-valid client. Disposing first
+        // would cause those tasks to ObjectDisposedException.
+        _http?.Dispose();
+        _http = null;
 
         // Dispose tray icon explicitly before the process dies — this
         // removes the icon from the system tray immediately. Without

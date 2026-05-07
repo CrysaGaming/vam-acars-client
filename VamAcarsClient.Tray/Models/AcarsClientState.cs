@@ -104,6 +104,19 @@ public class AcarsClientState : INotifyPropertyChanged
         set => SetField(ref _aircraftType, value);
     }
 
+    private string? _aircraftRegistration;
+    /// <summary>
+    /// Server-echoed tail number (M3.8.1). Same value the client sent
+    /// in the heartbeat — included on the response for symmetry so the
+    /// UI reads everything from one source. Display layer typically
+    /// joins with <see cref="AircraftType"/> as "A320 / D-ANNE".
+    /// </summary>
+    public string? AircraftRegistration
+    {
+        get => _aircraftRegistration;
+        set => SetField(ref _aircraftRegistration, value);
+    }
+
     private string? _currentPhase;
     /// <summary>
     /// Server-resolved phase (echoed in the heartbeat response since M3.7).

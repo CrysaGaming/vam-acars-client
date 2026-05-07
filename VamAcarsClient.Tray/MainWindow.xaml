@@ -75,6 +75,92 @@
             <Setter Property="HorizontalAlignment" Value="Right" />
             <Setter Property="FontFamily" Value="Consolas" />
         </Style>
+
+        <!--
+            Form-input style for the callsign / dep / arr boxes. Dark
+            theme, monospaced font (so ICAO codes line up visually),
+            disables itself while a session is running so the user
+            can't edit mid-flight. Triggers on ConnectionStatus =
+            Connected / Connecting — both states mean "leave the form
+            alone". Disconnected and Error allow editing.
+        -->
+        <Style x:Key="FormTextBox" TargetType="TextBox">
+            <Setter Property="Background" Value="{StaticResource BgPrimary}" />
+            <Setter Property="Foreground" Value="{StaticResource TextPrimary}" />
+            <Setter Property="BorderBrush" Value="{StaticResource BorderMuted}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Padding" Value="8,6" />
+            <Setter Property="FontFamily" Value="Consolas" />
+            <Setter Property="FontSize" Value="13" />
+            <Setter Property="CaretBrush" Value="{StaticResource AccentBlue}" />
+            <Setter Property="SelectionBrush" Value="{StaticResource AccentBlue}" />
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding ConnectionStatus}" Value="Connected">
+                    <Setter Property="IsEnabled" Value="False" />
+                    <Setter Property="Opacity" Value="0.55" />
+                </DataTrigger>
+                <DataTrigger Binding="{Binding ConnectionStatus}" Value="Connecting">
+                    <Setter Property="IsEnabled" Value="False" />
+                    <Setter Property="Opacity" Value="0.55" />
+                </DataTrigger>
+            </Style.Triggers>
+        </Style>
+
+        <!--
+            Connect/Disconnect button. Three visual states driven by
+            ConnectionStatus DataTriggers:
+              Disconnected / Error → Green, label "Verbinden"
+              Connecting           → Yellow, label "Verbinde…", disabled
+              Connected            → Red, label "Trennen"
+            Single button toggles the action — Click handler in code-
+            behind reads State.ConnectionStatus to decide Start vs Stop.
+            Cursor=Hand because users expect that on actionable buttons.
+        -->
+        <Style x:Key="PrimaryButton" TargetType="Button">
+            <Setter Property="Background" Value="{StaticResource AccentGreen}" />
+            <Setter Property="Foreground" Value="{StaticResource BgPrimary}" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="FontSize" Value="13" />
+            <Setter Property="Padding" Value="20,10" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Content" Value="Verbinden" />
+            <Setter Property="Template">
+                <!--
+                    Default WPF button has rounded-only-on-some-themes and
+                    pulls a system-coloured 'pressed' state. Replacing the
+                    template with a flat Border keeps our colours intact
+                    across Windows themes. ContentPresenter handles the
+                    label centring; no inner padding needed beyond the
+                    Border padding.
+                -->
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border Background="{TemplateBinding Background}"
+                                CornerRadius="4"
+                                Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Center"
+                                              VerticalAlignment="Center"
+                                              TextElement.Foreground="{TemplateBinding Foreground}" />
+                        </Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding ConnectionStatus}" Value="Connected">
+                    <Setter Property="Background" Value="{StaticResource AccentRed}" />
+                    <Setter Property="Content" Value="Trennen" />
+                </DataTrigger>
+                <DataTrigger Binding="{Binding ConnectionStatus}" Value="Connecting">
+                    <Setter Property="Background" Value="{StaticResource AccentYellow}" />
+                    <Setter Property="Content" Value="Verbinde…" />
+                    <Setter Property="IsEnabled" Value="False" />
+                </DataTrigger>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter Property="Opacity" Value="0.85" />
+                </Trigger>
+            </Style.Triggers>
+        </Style>
     </Window.Resources>
 
     <Grid Margin="20">
@@ -178,16 +264,27 @@
                     </StackPanel>
                 </Border>
 
-                <!-- Flight context card -->
+                <!--
+                    Flight context card. Top half: editable form
+                    (Callsign, Network, Departure ICAO, Arrival ICAO).
+                    Bottom half: live readouts (Aircraft, Phase) that
+                    populate from heartbeat responses once connected.
+                    Form fields auto-disable while running via the
+                    FormTextBox style's DataTriggers — no manual
+                    IsEnabled toggling in code-behind needed.
+                -->
                 <Border Style="{StaticResource CardBorder}">
                     <StackPanel>
                         <TextBlock Text="FLUG-KONTEXT" Style="{StaticResource SectionLabel}" />
+
+                        <!-- Editable form -->
                         <Grid>
                             <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="100" />
                                 <ColumnDefinition Width="*" />
-                                <ColumnDefinition Width="Auto" />
                             </Grid.ColumnDefinitions>
                             <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
                                 <RowDefinition Height="Auto" />
                                 <RowDefinition Height="Auto" />
                                 <RowDefinition Height="Auto" />
@@ -195,24 +292,94 @@
 
                             <TextBlock Grid.Row="0" Grid.Column="0"
                                        Text="Callsign" Style="{StaticResource FieldLabel}" />
-                            <TextBlock Grid.Row="0" Grid.Column="1"
-                                       Text="{Binding Callsign, FallbackValue='—', TargetNullValue='—'}"
-                                       Style="{StaticResource FieldValue}" />
+                            <TextBox  Grid.Row="0" Grid.Column="1"
+                                      x:Name="CallsignBox"
+                                      Text="NGN901"
+                                      Style="{StaticResource FormTextBox}" />
 
                             <TextBlock Grid.Row="1" Grid.Column="0" Margin="0,8,0,0"
-                                       Text="Aircraft" Style="{StaticResource FieldLabel}" />
-                            <TextBlock Grid.Row="1" Grid.Column="1" Margin="0,8,0,0"
-                                       Text="{Binding AircraftType, FallbackValue='—', TargetNullValue='—'}"
-                                       Style="{StaticResource FieldValue}" />
+                                       Text="Network" Style="{StaticResource FieldLabel}" />
+                            <TextBox  Grid.Row="1" Grid.Column="1" Margin="0,8,0,0"
+                                      x:Name="NetworkBox"
+                                      Text="Offline"
+                                      Style="{StaticResource FormTextBox}"
+                                      ToolTip="Offline | VATSIM | IVAO" />
 
                             <TextBlock Grid.Row="2" Grid.Column="0" Margin="0,8,0,0"
-                                       Text="Phase" Style="{StaticResource FieldLabel}" />
-                            <TextBlock Grid.Row="2" Grid.Column="1" Margin="0,8,0,0"
-                                       Text="{Binding CurrentPhase, FallbackValue='—', TargetNullValue='—'}"
-                                       Style="{StaticResource FieldValue}" />
+                                       Text="Departure" Style="{StaticResource FieldLabel}" />
+                            <TextBox  Grid.Row="2" Grid.Column="1" Margin="0,8,0,0"
+                                      x:Name="DeparturBox"
+                                      Text="EDDF"
+                                      MaxLength="4"
+                                      Style="{StaticResource FormTextBox}" />
+
+                            <TextBlock Grid.Row="3" Grid.Column="0" Margin="0,8,0,0"
+                                       Text="Arrival" Style="{StaticResource FieldLabel}" />
+                            <TextBox  Grid.Row="3" Grid.Column="1" Margin="0,8,0,0"
+                                      x:Name="ArrivalBox"
+                                      Text="EDDM"
+                                      MaxLength="4"
+                                      Style="{StaticResource FormTextBox}" />
                         </Grid>
+
+                        <!-- Live readouts (populated from heartbeats) -->
+                        <Border BorderBrush="{StaticResource BorderMuted}"
+                                BorderThickness="0,1,0,0"
+                                Margin="0,16,0,0"
+                                Padding="0,12,0,0">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                </Grid.RowDefinitions>
+
+                                <TextBlock Grid.Row="0" Grid.Column="0"
+                                           Text="Aircraft" Style="{StaticResource FieldLabel}" />
+                                <TextBlock Grid.Row="0" Grid.Column="1"
+                                           Text="{Binding AircraftType, FallbackValue='—', TargetNullValue='—'}"
+                                           Style="{StaticResource FieldValue}" />
+
+                                <!--
+                                    Registration row (M3.8.1). Echoed verbatim
+                                    by the server alongside the resolved
+                                    aircraftType so we show "A320 + D-ANNE"
+                                    matching the live-map. Null falls back to
+                                    em-dash for pilots flying without a set
+                                    tail number.
+                                -->
+                                <TextBlock Grid.Row="1" Grid.Column="0" Margin="0,6,0,0"
+                                           Text="Registration" Style="{StaticResource FieldLabel}" />
+                                <TextBlock Grid.Row="1" Grid.Column="1" Margin="0,6,0,0"
+                                           Text="{Binding AircraftRegistration, FallbackValue='—', TargetNullValue='—'}"
+                                           Style="{StaticResource FieldValue}" />
+
+                                <TextBlock Grid.Row="2" Grid.Column="0" Margin="0,6,0,0"
+                                           Text="Phase" Style="{StaticResource FieldLabel}" />
+                                <TextBlock Grid.Row="2" Grid.Column="1" Margin="0,6,0,0"
+                                           Text="{Binding CurrentPhase, FallbackValue='—', TargetNullValue='—'}"
+                                           Style="{StaticResource FieldValue}" />
+                            </Grid>
+                        </Border>
                     </StackPanel>
                 </Border>
+
+                <!--
+                    Connect/Disconnect button. Style handles the colour
+                    + label flip via ConnectionStatus triggers; click
+                    handler in code-behind decides Start vs Stop based
+                    on the same state. Stretched horizontally so it
+                    reads as the primary action of the window.
+                -->
+                <Button x:Name="ConnectButton"
+                        Style="{StaticResource PrimaryButton}"
+                        HorizontalAlignment="Stretch"
+                        Margin="0,0,0,12"
+                        Click="OnConnectClick" />
 
                 <!-- Heartbeat counters card -->
                 <Border Style="{StaticResource CardBorder}">

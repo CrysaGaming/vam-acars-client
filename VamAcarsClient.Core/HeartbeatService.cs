@@ -533,4 +533,28 @@ public sealed class HeartbeatResponse
     /// optionally let users override mid-flight.
     /// </summary>
     [JsonPropertyName("phaseSource")] public string? PhaseSource { get; init; }
+
+    // ─── Aircraft-echo (M3.8.1) ──────────────────────────────────────
+    // Server reports back the M3.8-resolved aircraft identity. Mirrors
+    // the phase-echo pattern above: client doesn't run the resolver,
+    // server is the single source of truth, client surfaces what the
+    // live-map already shows. Without these fields, a client UI would
+    // either have to display the raw SimConnect ATC MODEL value (often
+    // an ugly localization token) or duplicate the resolver code.
+
+    /// <summary>
+    /// Server's resolved ICAO aircraft type after running M3.8's
+    /// 3-tier resolver: fleet-registration match → regex pattern →
+    /// raw fallback. Examples: "A320", "B738", "DH8D". Always present
+    /// on responses from M3.8.1+ servers; null for older servers.
+    /// </summary>
+    [JsonPropertyName("aircraftType")] public string? AircraftType { get; init; }
+
+    /// <summary>
+    /// Tail number echoed verbatim from the heartbeat payload. Same
+    /// value the client sent — included for symmetry so a UI can
+    /// display "A320 / D-ANNE" from one source. May be null if the
+    /// pilot didn't set a registration in their flight context.
+    /// </summary>
+    [JsonPropertyName("aircraftRegistration")] public string? AircraftRegistration { get; init; }
 }
