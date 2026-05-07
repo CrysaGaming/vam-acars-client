@@ -49,6 +49,7 @@ Console.WriteLine();
 Console.WriteLine("Was möchtest du testen?");
 Console.WriteLine("  [1] Pairing + Status (Server-Roundtrip)");
 Console.WriteLine("  [2] SimConnect Read-Loop (Telemetrie aus MSFS)");
+Console.WriteLine("  [3] Live-Heartbeat (SimConnect → Server)");
 Console.WriteLine("  [q] Beenden");
 Console.WriteLine();
 Console.Write("Auswahl: ");
@@ -58,6 +59,7 @@ return mode switch
 {
     "1" => await RunPairingFlowAsync(http),
     "2" => RunSimConnectFlow(),
+    "3" => await RunHeartbeatFlowAsync(http),
     _ => 0,
 };
 
@@ -237,5 +239,184 @@ static int RunSimConnectFlow()
 
     Console.WriteLine();
     Console.WriteLine($"[✓] Stopp. {samplesReceived} Samples in {stopwatch.Elapsed.TotalSeconds:F1}s erhalten.");
+    return 0;
+}
+
+// ═════════════════════════════════════════════════════════════════════
+// Mode 3: Live-Heartbeat (full integration test)
+// ═════════════════════════════════════════════════════════════════════
+// Loads stored token, connects SimConnect, sends heartbeats to the
+// server every 2s. Pilot should appear on the live-map at
+// vam.kevindrack.de with dataSource=ACARS_CLIENT.
+
+static async Task<int> RunHeartbeatFlowAsync(HttpClient httpClient)
+{
+    Console.WriteLine();
+
+    // ─── Token check ───
+    var token = TokenStore.TryLoad();
+    if (token is null)
+    {
+        Console.WriteLine("[X] Kein Token gespeichert. Erst Mode 1 (Pairing) durchlaufen.");
+        return 1;
+    }
+    Console.WriteLine($"[i] Token geladen ({token.Length} chars).");
+
+    // ─── User input: Flight context ───
+    // SimConnect doesn't know callsign/flight-number/network. User
+    // types these once at the start of a flight.
+    Console.WriteLine();
+    Console.WriteLine("=== Flight-Kontext ===");
+    Console.Write("Callsign (z.B. NGN901): ");
+    var callsign = Console.ReadLine()?.Trim();
+    if (string.IsNullOrWhiteSpace(callsign))
+    {
+        Console.WriteLine("[X] Callsign erforderlich. Abbruch.");
+        return 1;
+    }
+
+    Console.WriteLine();
+    Console.WriteLine("Network:");
+    Console.WriteLine("  [1] Offline (Standard für Test)");
+    Console.WriteLine("  [2] VATSIM");
+    Console.WriteLine("  [3] IVAO");
+    Console.Write("Auswahl [1]: ");
+    var networkChoice = Console.ReadLine()?.Trim();
+    var network = networkChoice switch
+    {
+        "2" => "VATSIM",
+        "3" => "IVAO",
+        _ => "Offline",
+    };
+
+    Console.Write("Departure ICAO (optional, z.B. EDDF): ");
+    var departure = Console.ReadLine()?.Trim().ToUpperInvariant();
+    if (string.IsNullOrWhiteSpace(departure)) departure = null;
+
+    Console.Write("Arrival ICAO (optional, z.B. EDDM): ");
+    var arrival = Console.ReadLine()?.Trim().ToUpperInvariant();
+    if (string.IsNullOrWhiteSpace(arrival)) arrival = null;
+
+    var flightContext = new FlightContext
+    {
+        Callsign = callsign,
+        Network = network,
+        DepartureIcao = departure,
+        ArrivalIcao = arrival,
+    };
+
+    // ─── SimConnect ───
+    Console.WriteLine();
+    Console.WriteLine("[…] Verbinde zu MSFS …");
+    using var sim = new SimConnectClient();
+    try
+    {
+        sim.Connect();
+    }
+    catch (System.Runtime.InteropServices.COMException ex)
+    {
+        Console.WriteLine($"[X] SimConnect-Connect fehlgeschlagen: 0x{ex.HResult:X8}");
+        Console.WriteLine("    MSFS muss laufen.");
+        return 5;
+    }
+    Console.WriteLine("[✓] SimConnect verbunden.");
+
+    // ─── Heartbeat-Service ───
+    using var heartbeat = new HeartbeatService(
+        httpClient,
+        sim,
+        token,
+        flightContext,
+        interval: TimeSpan.FromSeconds(2));
+
+    var sentCount = 0;
+    var failedCount = 0;
+    string? lastSessionId = null;
+
+    heartbeat.HeartbeatSent += response =>
+    {
+        sentCount++;
+        lastSessionId = response.SessionId;
+    };
+    heartbeat.HeartbeatFailed += msg =>
+    {
+        failedCount++;
+        Console.WriteLine($"[!] {msg}");
+    };
+
+    var stopCts = new CancellationTokenSource();
+    var reAuthRequired = false;
+    heartbeat.ReAuthRequired += () =>
+    {
+        reAuthRequired = true;
+        TokenStore.Clear();
+        stopCts.Cancel();
+    };
+
+    Console.WriteLine();
+    Console.WriteLine($"[✓] Heartbeat startet (Callsign: {callsign}, Network: {network}).");
+    Console.WriteLine("    Polle MSFS @ 1Hz, sende an Server @ 2s. Strg+C zum Beenden.");
+    Console.WriteLine($"    Live-Map: https://vam.kevindrack.de/live");
+    Console.WriteLine();
+
+    heartbeat.Start();
+
+    // Periodically request SimConnect telemetry. Heartbeat-loop reads
+    // sim.LatestTelemetry on its own schedule.
+    Console.CancelKeyPress += (_, e) =>
+    {
+        e.Cancel = true;
+        stopCts.Cancel();
+    };
+
+    var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+    var lastStatusLine = DateTime.MinValue;
+
+    while (!stopCts.IsCancellationRequested)
+    {
+        sim.RequestTelemetry();
+
+        // Status-line every 5s so the user sees progress without spam.
+        var now = DateTime.Now;
+        if ((now - lastStatusLine).TotalSeconds >= 5)
+        {
+            var t = sim.LatestTelemetry;
+            if (t is { } tel)
+            {
+                Console.WriteLine(
+                    $"[{now:HH:mm:ss}] " +
+                    $"sent={sentCount} failed={failedCount} queued={heartbeat.QueuedCount} | " +
+                    $"{tel.LatitudeDeg:F4}°,{tel.LongitudeDeg:F4}° " +
+                    $"Alt:{tel.AltitudeFt:F0}ft GS:{tel.GroundSpeedKts:F0}kts " +
+                    $"OnGnd:{(tel.OnGround > 0.5 ? "Y" : "N")}");
+            }
+            lastStatusLine = now;
+        }
+
+        try
+        {
+            await Task.Delay(1000, stopCts.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            break;
+        }
+    }
+
+    Console.WriteLine();
+    await heartbeat.StopAsync();
+    sim.Disconnect();
+
+    Console.WriteLine($"[✓] Stopp. {sentCount} sent, {failedCount} failed, {heartbeat.QueuedCount} ungesendet.");
+    if (lastSessionId is not null)
+    {
+        Console.WriteLine($"    LiveSession-ID: {lastSessionId}");
+    }
+    if (reAuthRequired)
+    {
+        Console.WriteLine();
+        Console.WriteLine("[!] Token wurde abgelehnt — bitte erneut pairen (Mode 1).");
+        return 4;
+    }
     return 0;
 }

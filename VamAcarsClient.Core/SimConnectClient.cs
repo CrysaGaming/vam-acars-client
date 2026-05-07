@@ -156,9 +156,29 @@ public sealed class SimConnectClient : IDisposable
 
         Add("ENG N1 RPM:1", "percent");
         Add("GENERAL ENG THROTTLE LEVER POSITION:1", "percent");
+        Add("FUEL TOTAL QUANTITY WEIGHT", "kilograms");
 
         Add("AUTOPILOT MASTER", "bool");
         Add("AUTOPILOT ALTITUDE LOCK", "bool");
+
+        // String SimVars use a different overload — explicit STRING32
+        // datatype, no units string. SimConnect treats strings as fixed-
+        // length byte buffers; the wrapper marshalls them into our
+        // struct's [ByValTStr] fields automatically.
+        sc.AddToDataDefinition(
+            DataDefinitionId.Telemetry,
+            "ATC MODEL",
+            null,
+            SIMCONNECT_DATATYPE.STRING32,
+            0.0f,
+            SimConnect.SIMCONNECT_UNUSED);
+        sc.AddToDataDefinition(
+            DataDefinitionId.Telemetry,
+            "ATC ID",
+            null,
+            SIMCONNECT_DATATYPE.STRING32,
+            0.0f,
+            SimConnect.SIMCONNECT_UNUSED);
 
         // Tell SimConnect the C# struct it should marshal into. Generic
         // type binds the C-side definition to our managed struct layout.
