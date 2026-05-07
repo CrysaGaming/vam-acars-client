@@ -1,0 +1,71 @@
+<Application x:Class="VamAcarsClient.Tray.App"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:tb="http://www.hardcodet.net/taskbar"
+             xmlns:local="clr-namespace:VamAcarsClient.Tray"
+             ShutdownMode="OnExplicitShutdown">
+    <!--
+        ShutdownMode=OnExplicitShutdown:
+        Default WPF closes the app when the last window closes. We do
+        the opposite — the app should keep running even when MainWindow
+        is hidden, because the tray-icon IS the always-running surface.
+        Only explicit Application.Current.Shutdown() (from the tray
+        Exit menu) terminates the process.
+
+        ShutdownMode is also why we DO NOT set StartupUri — that would
+        auto-create+show MainWindow at app start. Instead, App.xaml.cs's
+        OnStartup constructs everything explicitly and the window stays
+        hidden until the user requests it.
+    -->
+    <Application.Resources>
+        <!--
+            TaskbarIcon: H.NotifyIcon's WPF wrapper around the Win32
+            NOTIFYICONDATA struct. Defining it as a resource (not in a
+            window) means it lives independent of any visible window —
+            exactly what a tray-app needs.
+
+            We instantiate it at app startup via FindResource() in
+            App.xaml.cs, then keep a reference on the App so it doesn't
+            get garbage-collected. Without that GC-pin, the icon
+            disappears unpredictably after the first GC pass.
+
+            IconSource: pack URI into the embedded Resources/app.ico.
+            The placeholder is a 16x16 dark-blue square with "VAM" text.
+            Replace at any time — H.NotifyIcon hot-reloads when the
+            DependencyProperty changes.
+
+            NoLeftClickDelay=True: makes tray-icon left-click respond
+            instantly (default has a delay to differentiate from
+            double-click). Single-click → toggle window visibility.
+        -->
+        <tb:TaskbarIcon x:Key="VamTrayIcon"
+                        IconSource="pack://application:,,,/Resources/app.ico"
+                        ToolTipText="VAM ACARS Client"
+                        NoLeftClickDelay="True"
+                        TrayLeftMouseDown="OnTrayLeftClick">
+            <tb:TaskbarIcon.ContextMenu>
+                <ContextMenu>
+                    <!--
+                        Status-line MenuItem: read-only display of the
+                        current connection state. IsEnabled=False makes
+                        it look greyed-out (so it's clearly not clickable)
+                        while still being visible. The Header is bound
+                        to the App's AcarsClientState in code-behind.
+                    -->
+                    <MenuItem x:Name="MenuStatusItem"
+                              Header="Status: Skeleton — not connected"
+                              IsEnabled="False"
+                              FontWeight="SemiBold" />
+                    <Separator />
+                    <MenuItem x:Name="MenuShowWindow"
+                              Header="Status-Fenster öffnen…"
+                              Click="OnShowWindowClick" />
+                    <Separator />
+                    <MenuItem x:Name="MenuExit"
+                              Header="Beenden"
+                              Click="OnExitClick" />
+                </ContextMenu>
+            </tb:TaskbarIcon.ContextMenu>
+        </tb:TaskbarIcon>
+    </Application.Resources>
+</Application>

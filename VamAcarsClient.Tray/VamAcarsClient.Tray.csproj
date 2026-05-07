@@ -1,0 +1,70 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+	<PropertyGroup>
+		<!--
+			WinExe (not Exe) so launching from Explorer doesn't pop a
+			console window. WPF-app convention. The startup is still
+			Program.cs / App.xaml.cs — same as a normal WPF.
+		-->
+		<OutputType>WinExe</OutputType>
+		<TargetFramework>net10.0-windows</TargetFramework>
+		<PlatformTarget>x64</PlatformTarget>
+		<UseWPF>true</UseWPF>
+		<ImplicitUsings>enable</ImplicitUsings>
+		<Nullable>enable</Nullable>
+		<RootNamespace>VamAcarsClient.Tray</RootNamespace>
+		<AssemblyName>VamAcarsClientTray</AssemblyName>
+
+		<!--
+			ApplicationIcon controls the .exe's file-explorer icon.
+			NotifyIcon.Wpf displays its own DataContext-bound icon at
+			runtime, which is independent of this. We point both at the
+			same .ico resource for visual consistency.
+		-->
+		<ApplicationIcon>Resources\app.ico</ApplicationIcon>
+	</PropertyGroup>
+
+	<ItemGroup>
+		<ProjectReference Include="..\VamAcarsClient.Core\VamAcarsClient.Core.csproj" />
+	</ItemGroup>
+
+	<!--
+		appsettings.json is shared in spirit with the Cli but lives as
+		its own copy so the tray-app can be deployed without dragging
+		Cli artifacts along. PreserveNewest matches the Cli convention.
+	-->
+	<ItemGroup>
+		<None Update="appsettings.json">
+			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+		</None>
+		<None Update="appsettings.Development.json">
+			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+			<DependentUpon>appsettings.json</DependentUpon>
+		</None>
+	</ItemGroup>
+
+	<!--
+		Tray-icon library: H.NotifyIcon.Wpf is the modern fork of
+		Hardcodet.NotifyIcon. Net6+ compatible, MIT, actively maintained.
+		Provides the TaskbarIcon control that we bind to in App.xaml.
+		https://github.com/HavenDV/H.NotifyIcon
+	-->
+	<ItemGroup>
+		<PackageReference Include="H.NotifyIcon.Wpf" Version="2.2.0" />
+
+		<!-- Same logging stack as Cli for parity. Serilog-only here;
+		     no Console-sink because there's no console to write to. -->
+		<PackageReference Include="Microsoft.Extensions.Configuration.Binder" Version="10.0.7" />
+		<PackageReference Include="Microsoft.Extensions.Configuration.Json" Version="10.0.7" />
+		<PackageReference Include="Microsoft.Extensions.Logging" Version="10.0.7" />
+		<PackageReference Include="Serilog" Version="4.3.1" />
+		<PackageReference Include="Serilog.Extensions.Logging" Version="10.0.0" />
+		<PackageReference Include="Serilog.Settings.Configuration" Version="10.0.0" />
+		<PackageReference Include="Serilog.Sinks.File" Version="7.0.0" />
+	</ItemGroup>
+
+	<ItemGroup>
+		<Resource Include="Resources\app.ico" />
+	</ItemGroup>
+
+</Project>

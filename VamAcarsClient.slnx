@@ -4,4 +4,5 @@
   </Folder>
   <Project Path="VamAcarsClient.Cli/VamAcarsClient.Cli.csproj" />
   <Project Path="VamAcarsClient.Core/VamAcarsClient.Core.csproj" />
+  <Project Path="VamAcarsClient.Tray/VamAcarsClient.Tray.csproj" />
 </Solution>
