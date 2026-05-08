@@ -380,4 +380,123 @@ public partial class MainWindow : Window
         var app = (App)Application.Current;
         await app.ProbeSimAsync();
     }
+
+    /// <summary>
+    /// OFP-Import button handler (option #12). Reads the multi-line
+    /// text from <c>OfpInputBox</c>, runs it through the heuristic
+    /// <see cref="OfpParser"/> in Core, and pre-fills whichever
+    /// FLUG-KONTEXT form fields the parser confidently extracted.
+    /// Reports the outcome via <see cref="App.State"/>.StatusMessage
+    /// so the footer-strip tells the user how many fields landed.
+    ///
+    /// Why fill via the bound form-fields directly (CallsignBox.Text =
+    /// ...) rather than going through SaveFlightContext + reload:
+    /// SaveFlightContext is the persistence path for "user just
+    /// connected with these values"; OFP-import is "user is editing".
+    /// We only commit to disk when they hit Verbinden (existing flow
+    /// in OnConnectClick). This keeps OFP-import non-destructive — if
+    /// the user pastes garbage and the parser fills nothing, the form
+    /// keeps its previous values, no save happened, and they can
+    /// retry without losing their last manually-typed plan.
+    ///
+    /// Fields mapped:
+    ///   - Callsign     → CallsignBox.Text
+    ///   - DepartureIcao → DeparturBox.Text
+    ///   - ArrivalIcao   → ArrivalBox.Text
+    ///
+    /// Fields the parser extracts but the form has no slot for
+    /// (CruiseAltitudeFt, AircraftType, FlightRules): mentioned in the
+    /// status message so the user knows the parser saw them, but not
+    /// auto-filled. These flow through the heartbeat once Verbinden is
+    /// pressed via the saved <see cref="App.LastFlightContext"/> path —
+    /// future enhancement could expose them as additional form fields.
+    ///
+    /// Network is not extracted from OFPs (SimBrief / FlightAware don't
+    /// know whether the user intends to fly online or offline), so
+    /// NetworkBox stays untouched.
+    ///
+    /// Empty / whitespace-only input → "Bitte OFP-text einfügen." and
+    /// return without touching anything. Parser returns null on the
+    /// same condition, so the dual-check is belt-and-braces.
+    /// </summary>
+    private void OnOfpImportClick(object sender, RoutedEventArgs e)
+    {
+        var raw = OfpInputBox.Text;
+        var app = (App)Application.Current;
+
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            app.State.StatusMessage = "Bitte OFP-text einfügen.";
+            return;
+        }
+
+        var parsed = OfpParser.Parse(raw);
+        if (parsed is null)
+        {
+            app.State.StatusMessage = "OFP-Import: kein verwertbarer Text.";
+            return;
+        }
+
+        // Track which fields actually landed in the form so the status
+        // message can name them. The user can then sanity-check by
+        // glancing at the FLUG-KONTEXT card above.
+        var filled = new List<string>();
+
+        if (!string.IsNullOrWhiteSpace(parsed.Callsign))
+        {
+            CallsignBox.Text = parsed.Callsign;
+            filled.Add("Callsign");
+        }
+        if (!string.IsNullOrWhiteSpace(parsed.DepartureIcao))
+        {
+            DeparturBox.Text = parsed.DepartureIcao;
+            filled.Add("Departure");
+        }
+        if (!string.IsNullOrWhiteSpace(parsed.ArrivalIcao))
+        {
+            ArrivalBox.Text = parsed.ArrivalIcao;
+            filled.Add("Arrival");
+        }
+
+        // Extracted-but-unbound fields. We collect them into a separate
+        // bucket so the status line can mention "FL360 erkannt (kein
+        // Form-Feld)" without it looking like a fill action — gives the
+        // pilot transparency about what the parser saw.
+        var saw = new List<string>();
+        if (parsed.CruiseAltitudeFt is { } cruiseFt)
+        {
+            // Render flight-levels in the same notation the OFP used.
+            // 3-digit FL form for ≥ FL100, 2-digit for below — this is
+            // what SimBrief and FlightAware both do.
+            var fl = cruiseFt / 100;
+            saw.Add($"Cruise FL{fl:D3}");
+        }
+        if (!string.IsNullOrWhiteSpace(parsed.AircraftType)) saw.Add($"Type {parsed.AircraftType}");
+        if (!string.IsNullOrWhiteSpace(parsed.FlightRules)) saw.Add(parsed.FlightRules);
+
+        // Compose status. Three branches:
+        //   1) Form fields filled + extras seen → "3 Felder + Cruise FL360"
+        //   2) Form fields filled, no extras    → "3 Felder importiert: …"
+        //   3) Nothing matched                  → "Keine Felder erkannt"
+        string status;
+        if (filled.Count > 0)
+        {
+            status = $"OFP-Import: {filled.Count} Felder importiert ({string.Join(", ", filled)})";
+            if (saw.Count > 0) status += $" · Erkannt: {string.Join(", ", saw)}";
+        }
+        else if (saw.Count > 0)
+        {
+            // Nothing filled but parser saw secondary fields — report
+            // those so the user knows the parse worked, just not on
+            // form-bound fields. Common when pasting a route summary
+            // that has FL but no callsign/dep/arr labels.
+            status = $"OFP-Import: keine Form-Felder erkannt · Erkannt: {string.Join(", ", saw)}";
+        }
+        else
+        {
+            status = "OFP-Import: keine Felder erkannt — Parser-Heuristik passt nicht zum Format.";
+        }
+
+        app.State.StatusMessage = status;
+    }
 }

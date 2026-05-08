@@ -424,6 +424,94 @@
                 </Border>
 
                 <!--
+                    OFP-Import card (option #12). Lets the pilot paste
+                    a SimBrief / FlightAware / PFPX OFP text dump and
+                    have its key fields (callsign, departure, arrival,
+                    cruise altitude) auto-filled into FLUG-KONTEXT. The
+                    parser is a heuristic regex battery — see
+                    VamAcarsClient.Core.OfpParser for the supported
+                    patterns.
+
+                    Layout: section label + multi-line monospaced text
+                    box + hint text + import button. The text box uses
+                    BgPrimary so it visually matches the form-input
+                    style of the FLUG-KONTEXT TextBoxes one card up;
+                    multi-line + AcceptsReturn so users can paste an
+                    entire OFP block, not just one line. MinHeight=90
+                    gives the box room without dominating the window.
+
+                    Why a separate card rather than collapsing into
+                    FLUG-KONTEXT: the import workflow is conceptually
+                    distinct from the flight-context form — paste-and-
+                    parse on one side, type-and-edit on the other. A
+                    dedicated card keeps the visual hierarchy honest.
+                -->
+                <Border Style="{StaticResource CardBorder}">
+                    <StackPanel>
+                        <TextBlock Text="OFP-IMPORT" Style="{StaticResource SectionLabel}" />
+
+                        <TextBox x:Name="OfpInputBox"
+                                 AcceptsReturn="True"
+                                 TextWrapping="Wrap"
+                                 VerticalScrollBarVisibility="Auto"
+                                 MinHeight="90"
+                                 MaxHeight="180"
+                                 Background="{StaticResource BgPrimary}"
+                                 Foreground="{StaticResource TextPrimary}"
+                                 BorderBrush="{StaticResource BorderMuted}"
+                                 BorderThickness="1"
+                                 Padding="8,6"
+                                 FontFamily="Consolas"
+                                 FontSize="12"
+                                 CaretBrush="{StaticResource AccentBlue}"
+                                 SelectionBrush="{StaticResource AccentBlue}" />
+
+                        <TextBlock Margin="0,8,0,0"
+                                   FontSize="11"
+                                   Foreground="{StaticResource TextMuted}"
+                                   TextWrapping="Wrap"
+                                   Text="Füge OFP-text aus SimBrief / FlightAware / PFPX ein und klicke 'Importieren'. Erkannte Felder werden in FLUG-KONTEXT übernommen." />
+
+                        <Button x:Name="OfpImportButton"
+                                Click="OnOfpImportClick"
+                                HorizontalAlignment="Left"
+                                Margin="0,8,0,0"
+                                Padding="14,6"
+                                Background="{StaticResource BgSecondary}"
+                                Foreground="{StaticResource TextPrimary}"
+                                FontSize="12"
+                                BorderThickness="1"
+                                BorderBrush="{StaticResource BorderMuted}"
+                                Cursor="Hand"
+                                Content="Importieren"
+                                ToolTip="Liest Callsign + Dep/Arr ICAO + Cruise-Altitude aus dem oben eingefügten OFP-Text und füllt die FLUG-KONTEXT-Felder vor.">
+                            <Button.Template>
+                                <ControlTemplate TargetType="Button">
+                                    <Border Background="{TemplateBinding Background}"
+                                            BorderBrush="{TemplateBinding BorderBrush}"
+                                            BorderThickness="{TemplateBinding BorderThickness}"
+                                            CornerRadius="4"
+                                            Padding="{TemplateBinding Padding}">
+                                        <ContentPresenter HorizontalAlignment="Center"
+                                                          VerticalAlignment="Center"
+                                                          TextElement.Foreground="{TemplateBinding Foreground}" />
+                                    </Border>
+                                </ControlTemplate>
+                            </Button.Template>
+                            <Button.Style>
+                                <Style TargetType="Button">
+                                    <Style.Triggers>
+                                        <Trigger Property="IsMouseOver" Value="True">
+                                            <Setter Property="Background" Value="{StaticResource BgPrimary}" />
+                                        </Trigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </Button.Style>
+                        </Button>
+                    </StackPanel>
+                </Border>
+
+                <!--
                     Pre-flight checklist card (option #10). Discipline-
                     tool + connect-gate. The user ticks each item before
                     clicking Verbinden; the PrimaryButton's
