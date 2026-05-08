@@ -698,6 +698,70 @@
                                 </TextBlock.Style>
                             </TextBlock>
                         </Button>
+
+                        <!--
+                            Re-pair button (option #3). Lets the user explicitly
+                            unpair this device so they can re-pair against a
+                            fresh code from the web UI — useful after a token
+                            revoke from the server side, or when handing the
+                            install over to a different VAM account on the
+                            same Windows user. Without this button the only
+                            recovery path is deleting %LOCALAPPDATA%\
+                            VamAcarsClient\token.dat by hand, which is hostile.
+
+                            Subdued styling — secondary destructive action,
+                            shouldn't compete visually with the Connect button
+                            or the update install button. Border + transparent
+                            fill + AccentRed text reads as "available but be
+                            sure". Hover swaps to a faintly-tinted background
+                            for affordance feedback. The actual destructive
+                            confirmation lives in the Click handler's
+                            MessageBox, defaulting to No.
+
+                            Visibility: only shown when HasToken=true. There's
+                            nothing to unpair when not paired, and showing a
+                            disabled re-pair button when paired=false would be
+                            misleading ("re-pair from what?"). The Visibility
+                            binding via BoolToVis collapses the button entirely
+                            in the unpaired state — no layout gap.
+                        -->
+                        <Button x:Name="RepairButton"
+                                Click="OnRepairClick"
+                                HorizontalAlignment="Left"
+                                Margin="0,8,0,0"
+                                Padding="14,6"
+                                Background="Transparent"
+                                Foreground="{StaticResource AccentRed}"
+                                FontSize="12"
+                                BorderThickness="1"
+                                BorderBrush="{StaticResource AccentRed}"
+                                Cursor="Hand"
+                                Content="Gerät neu koppeln"
+                                Visibility="{Binding HasToken, Converter={StaticResource BoolToVis}}"
+                                ToolTip="Löscht den gespeicherten ACARS-Token und trennt die laufende Sitzung. Anschließend über die CLI mit einem frischen Pairing-Code neu koppeln.">
+                            <Button.Template>
+                                <ControlTemplate TargetType="Button">
+                                    <Border Background="{TemplateBinding Background}"
+                                            BorderBrush="{TemplateBinding BorderBrush}"
+                                            BorderThickness="{TemplateBinding BorderThickness}"
+                                            CornerRadius="4"
+                                            Padding="{TemplateBinding Padding}">
+                                        <ContentPresenter HorizontalAlignment="Center"
+                                                          VerticalAlignment="Center"
+                                                          TextElement.Foreground="{TemplateBinding Foreground}" />
+                                    </Border>
+                                </ControlTemplate>
+                            </Button.Template>
+                            <Button.Style>
+                                <Style TargetType="Button">
+                                    <Style.Triggers>
+                                        <Trigger Property="IsMouseOver" Value="True">
+                                            <Setter Property="Opacity" Value="0.8" />
+                                        </Trigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </Button.Style>
+                        </Button>
                     </StackPanel>
                 </Border>
 

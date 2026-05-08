@@ -241,4 +241,57 @@ public partial class MainWindow : Window
         var app = (App)Application.Current;
         app.CheckForUpdatesNow();
     }
+
+    /// <summary>
+    /// Re-pair button handler (option #3). Confirms with the user that
+    /// they really want to delete the stored token, then delegates to
+    /// <see cref="Models.AcarsClientService.UnpairAsync"/>.
+    ///
+    /// Confirmation defaults to No (a stray Enter-press doesn't unpair).
+    /// The dialog spells out the consequence ("Token löschen + Sitzung
+    /// trennen") and the recovery step ("danach über die CLI neu pairen")
+    /// so the user knows what they're committing to. We don't try to
+    /// open the CLI for them — the CLI lives next to the tray exe but
+    /// invoking it from a GUI process needs a console to be useful, and
+    /// the in-app pairing dialog is itself on the roadmap.
+    ///
+    /// Async-void is fine here: it's a UI event handler (the canonical
+    /// async-void scenario), exceptions inside UnpairAsync are already
+    /// logged by the service, and there's no caller to await us. We
+    /// don't show errors to the user beyond what UnpairAsync already
+    /// surfaces via state.StatusMessage.
+    /// </summary>
+    private async void OnRepairClick(object sender, RoutedEventArgs e)
+    {
+        var result = MessageBox.Show(
+            this,
+            "Den gespeicherten ACARS-Token löschen und die laufende Sitzung trennen?\n\n"
+                + "Nach Bestätigung musst du das Gerät über die CLI mit einem frischen Pairing-Code neu koppeln, bevor du wieder verbinden kannst.",
+            "Gerät neu koppeln?",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Warning,
+            MessageBoxResult.No);
+
+        if (result != MessageBoxResult.Yes) return;
+
+        var app = (App)Application.Current;
+        var service = app.Service;
+        if (service is null)
+        {
+            // Defensive: should never happen — the button is only
+            // visible when HasToken=true, and HasToken can't be true
+            // before the service is constructed in App.OnStartup. But
+            // a startup-race or future refactor could trip this; fail
+            // loud rather than silently swallow the click.
+            MessageBox.Show(
+                this,
+                "Service ist nicht verfügbar — bitte App neu starten.",
+                "Fehler",
+                MessageBoxButton.OK,
+                MessageBoxImage.Error);
+            return;
+        }
+
+        await service.UnpairAsync();
+    }
 }

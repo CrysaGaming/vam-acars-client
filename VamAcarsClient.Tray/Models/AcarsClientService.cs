@@ -364,6 +364,46 @@ public sealed class AcarsClientService : IDisposable
         _ = Task.Run(StopAsync);
     }
 
+    /// <summary>
+    /// User-initiated re-pair. Tears down any active session, deletes the
+    /// stored DPAPI-encrypted token, and resets HasToken so the UI shows
+    /// "Nicht gepaart". The user then runs the CLI's pair command (or a
+    /// future in-app pairing dialog) to redeem a fresh code.
+    ///
+    /// Symmetric with <see cref="OnReAuthRequired"/> — same three steps
+    /// (stop → clear token → update state) — but exposed as a public
+    /// awaitable for explicit user gestures, with a friendlier status
+    /// message that doesn't imply server-side rejection.
+    ///
+    /// Idempotent: if not currently connected, StopAsync is a no-op and
+    /// we just clear + update. Safe to call from a Click handler without
+    /// pre-checks. Errors during TokenStore.Clear are logged but don't
+    /// throw — the UI state still flips so the user sees something
+    /// happened, and re-attempting a Start would surface the underlying
+    /// problem (e.g. file locked) again with a clearer error path.
+    /// </summary>
+    public async Task UnpairAsync()
+    {
+        _logger.LogInformation("UnpairAsync requested by user");
+
+        // Stop first so we're not heartbeating into the void after the
+        // token is deleted. Order matters: a heartbeat in flight after
+        // clear would 401, triggering OnReAuthRequired concurrently with
+        // our manual update — the callback would override our friendlier
+        // status with "Token abgelehnt (401)…". StopAsync first avoids
+        // the gap entirely.
+        await StopAsync();
+
+        try { _tokenStore.Clear(); } catch (Exception ex) { _logger.LogWarning(ex, "TokenStore.Clear failed during unpair"); }
+
+        await SetStateAsync(s =>
+        {
+            s.HasToken = false;
+            s.ConnectionStatus = ConnectionStatus.Disconnected;
+            s.StatusMessage = "Gerät entkoppelt. Erneut über die CLI pairen, dann verbinden.";
+        });
+    }
+
     // ─── SimConnect poll-loop ────────────────────────────────────────────
 
     private async Task PollLoopAsync(CancellationToken ct)
