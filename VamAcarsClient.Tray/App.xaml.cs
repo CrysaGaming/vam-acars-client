@@ -521,6 +521,28 @@ public partial class App : Application
     }
 
     /// <summary>
+    /// Drives the "Auf Updates prüfen" button (M5 Phase 2). Fires
+    /// a re-check against GitHub Releases on user demand, instead
+    /// of waiting for the next app restart. Fire-and-forget; the
+    /// service's internal <see cref="AcarsClientState.UpdateChecking"/>
+    /// flip-flopping makes the button visually responsive without
+    /// the caller having to await.
+    ///
+    /// Re-entrancy is guarded inside <see cref="UpdateService.CheckAndDownloadAsync"/>
+    /// via the UpdateChecking state, so even if the click somehow
+    /// fires while the startup-check is still in flight, the second
+    /// invocation just queues another one — they won't race each
+    /// other's dispatcher work because each marshalls every state
+    /// mutation through the same UI thread.
+    /// </summary>
+    public void CheckForUpdatesNow()
+    {
+        if (_updateService is null) return;
+        _logger?.LogInformation("Manual update check requested by user");
+        _ = _updateService.CheckAndDownloadAsync();
+    }
+
+    /// <summary>
     /// Apply the current <see cref="AcarsClientState.ConnectionStatus"/>
     /// to the tray icon's tooltip. The icon image itself is fixed for
     /// the lifetime of the app (XAML's <c>IconSource</c> loads

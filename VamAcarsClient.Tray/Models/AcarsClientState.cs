@@ -246,6 +246,27 @@ public class AcarsClientState : INotifyPropertyChanged
         set => SetField(ref _updateDownloaded, value);
     }
 
+    private bool _updateChecking;
+    /// <summary>
+    /// True while <see cref="UpdateService.CheckAndDownloadAsync"/>
+    /// has an in-flight call to GitHub Releases. Gates the
+    /// "Auf Updates prüfen" button so the user can't fire a
+    /// second concurrent check while the first is still running
+    /// (the second would race the dispatcher state mutations and
+    /// could leave UpdateAvailable / UpdateDownloaded in a stale
+    /// configuration).
+    ///
+    /// Flipped true at the top of CheckAndDownloadAsync (after the
+    /// first dispatcher InvokeAsync) and false in the finally block.
+    /// The button's Content also swaps to "Prüfe..." while this is
+    /// true so the user sees something is happening.
+    /// </summary>
+    public bool UpdateChecking
+    {
+        get => _updateChecking;
+        set => SetField(ref _updateChecking, value);
+    }
+
     // ─── INotifyPropertyChanged plumbing ─────────────────────────────
 
     public event PropertyChangedEventHandler? PropertyChanged;

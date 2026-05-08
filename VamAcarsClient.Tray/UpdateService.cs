@@ -128,7 +128,10 @@ public sealed class UpdateService
 
     /// <summary>
     /// Background update probe. Safe to fire-and-forget from
-    /// App.OnStartup — caller doesn't need to await. On hit, sets
+    /// App.OnStartup AND from the user's "Auf Updates prüfen"
+    /// button click — the <see cref="AcarsClientState.UpdateChecking"/>
+    /// flag gates the button so a re-entrant call from a click can't
+    /// race the in-flight call from startup. On hit, sets
     /// <see cref="AcarsClientState.UpdateAvailable"/> +
     /// <see cref="AcarsClientState.LatestVersion"/>, then chains
     /// straight into the download (so the user's "Installieren"
@@ -136,6 +139,15 @@ public sealed class UpdateService
     /// </summary>
     public async Task CheckAndDownloadAsync()
     {
+        // ─── Re-entrancy guard ─────────────────────────────────────────
+        // Set UpdateChecking on the UI thread before we touch anything
+        // else so the button's "Prüfe..." state is visible immediately
+        // — the network round-trip can take a couple of seconds and
+        // the user staring at an unresponsive button isn't great UX.
+        // The corresponding reset lives in the finally block below
+        // so we always end in a known state, even on exception.
+        await _uiDispatcher.InvokeAsync(() => _state.UpdateChecking = true);
+
         try
         {
             _logger.LogInformation("Checking for updates…");
@@ -144,6 +156,15 @@ public sealed class UpdateService
             if (newVersion is null)
             {
                 _logger.LogInformation("No update available.");
+                // Explicitly clear any prior available-state on a manual
+                // re-check that comes back empty — covers the (rare)
+                // case where a release was yanked between checks.
+                await _uiDispatcher.InvokeAsync(() =>
+                {
+                    _state.UpdateAvailable = false;
+                    _state.UpdateDownloaded = false;
+                    _state.LatestVersion = null;
+                });
                 return;
             }
 
@@ -160,6 +181,11 @@ public sealed class UpdateService
             {
                 _state.UpdateAvailable = true;
                 _state.LatestVersion = newVersion.TargetFullRelease.Version.ToString();
+                // Reset UpdateDownloaded in case a previous check
+                // already had a download staged for an older release;
+                // we shouldn't tell the user "ready to install" until
+                // the new download completes.
+                _state.UpdateDownloaded = false;
             });
 
             await _manager.DownloadUpdatesAsync(newVersion).ConfigureAwait(false);
@@ -186,13 +212,20 @@ public sealed class UpdateService
 
             // Whatever went wrong, the UI stays in the "no update
             // available" state so we don't show a half-finished
-            // indicator. The next launch will retry.
+            // indicator. The next launch (or manual re-check) will retry.
             await _uiDispatcher.InvokeAsync(() =>
             {
                 _state.UpdateAvailable = false;
                 _state.UpdateDownloaded = false;
                 _state.LatestVersion = null;
             });
+        }
+        finally
+        {
+            // Always clear the in-flight flag so the button is
+            // re-enabled for the next manual check, even after
+            // failure.
+            await _uiDispatcher.InvokeAsync(() => _state.UpdateChecking = false);
         }
     }
 

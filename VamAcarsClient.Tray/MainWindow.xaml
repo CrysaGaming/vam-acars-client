@@ -582,6 +582,122 @@
                                 </Button.Style>
                             </Button>
                         </StackPanel>
+
+                        <!--
+                            Manual update-check button (M5 Phase 2).
+                            Visible when no update is currently known —
+                            mutually exclusive with the conditional
+                            block above. Lets the user re-trigger a
+                            check without restarting the app, useful
+                            after a known release ships ("did 0.2.0
+                            land yet?") or as a recovery affordance
+                            if the startup-check failed silently
+                            (network blip, GitHub rate limit, etc.).
+
+                            Visibility logic via DataTrigger (default
+                            Visible, flip Collapsed when UpdateAvailable
+                            becomes True) — avoids needing a new
+                            inverted-bool-to-visibility converter just
+                            for this one place.
+
+                            While a check is in flight the button is
+                            disabled and the inner TextBlock swaps to
+                            "Prüfe..." so the user gets feedback that
+                            the click registered. Both states are
+                            driven by the same UpdateChecking flag,
+                            flipped by UpdateService inside its
+                            try/finally guard.
+
+                            Subdued styling (BgSecondary fill rather
+                            than AccentBlue) because this is a
+                            secondary action — we don't want it
+                            competing with the Connect button above
+                            for the user's primary attention.
+                        -->
+                        <Button x:Name="CheckForUpdatesButton"
+                                Click="OnCheckForUpdatesClick"
+                                HorizontalAlignment="Left"
+                                Margin="0,8,0,0"
+                                Padding="14,6"
+                                Background="{StaticResource BgSecondary}"
+                                Foreground="{StaticResource TextPrimary}"
+                                FontSize="12"
+                                BorderThickness="1"
+                                BorderBrush="{StaticResource BorderMuted}"
+                                Cursor="Hand">
+                            <Button.Template>
+                                <ControlTemplate TargetType="Button">
+                                    <Border Background="{TemplateBinding Background}"
+                                            BorderBrush="{TemplateBinding BorderBrush}"
+                                            BorderThickness="{TemplateBinding BorderThickness}"
+                                            CornerRadius="4"
+                                            Padding="{TemplateBinding Padding}">
+                                        <ContentPresenter HorizontalAlignment="Center"
+                                                          VerticalAlignment="Center"
+                                                          TextElement.Foreground="{TemplateBinding Foreground}" />
+                                    </Border>
+                                </ControlTemplate>
+                            </Button.Template>
+                            <Button.Style>
+                                <Style TargetType="Button">
+                                    <Setter Property="Visibility" Value="Visible" />
+                                    <Style.Triggers>
+                                        <!--
+                                            Hide entirely when an update
+                                            block is showing — the
+                                            install button takes over
+                                            this slot. Putting the
+                                            visibility flip on this
+                                            button (rather than wrapping
+                                            the install block in an
+                                            inverted converter) keeps
+                                            the install block's existing
+                                            BoolToVis binding untouched.
+                                        -->
+                                        <DataTrigger Binding="{Binding UpdateAvailable}" Value="True">
+                                            <Setter Property="Visibility" Value="Collapsed" />
+                                        </DataTrigger>
+                                        <!--
+                                            Disable while a check is
+                                            running. The text swap
+                                            happens on the inner
+                                            TextBlock (see below) —
+                                            we can't override Content
+                                            from a Style trigger when
+                                            it's already a child element
+                                            via property-element syntax.
+                                        -->
+                                        <DataTrigger Binding="{Binding UpdateChecking}" Value="True">
+                                            <Setter Property="IsEnabled" Value="False" />
+                                            <Setter Property="Opacity" Value="0.7" />
+                                        </DataTrigger>
+                                        <Trigger Property="IsMouseOver" Value="True">
+                                            <Setter Property="Background" Value="{StaticResource BgPrimary}" />
+                                        </Trigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </Button.Style>
+                            <!--
+                                Use a TextBlock (not Content="...") so
+                                Style.Triggers can override the Text
+                                property when UpdateChecking flips.
+                                Setting Content="..." on the Button
+                                attribute would be a local-value win
+                                that triggers can't beat.
+                            -->
+                            <TextBlock>
+                                <TextBlock.Style>
+                                    <Style TargetType="TextBlock">
+                                        <Setter Property="Text" Value="Auf Updates prüfen" />
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding UpdateChecking}" Value="True">
+                                                <Setter Property="Text" Value="Prüfe..." />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </TextBlock.Style>
+                            </TextBlock>
+                        </Button>
                     </StackPanel>
                 </Border>
 

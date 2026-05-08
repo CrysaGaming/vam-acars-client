@@ -187,4 +187,24 @@ public partial class MainWindow : Window
         var app = (App)Application.Current;
         app.ApplyUpdate();
     }
+
+    /// <summary>
+    /// "Auf Updates prüfen" button handler (M5 Phase 2). Fires a
+    /// fresh check against GitHub Releases without waiting for the
+    /// next app restart. Re-entrancy is guarded inside the service
+    /// via <see cref="Models.AcarsClientState.UpdateChecking"/>; the
+    /// XAML disables the button while that flag is set so a fast
+    /// double-click can't actually queue two concurrent checks.
+    ///
+    /// Fire-and-forget: the method returns immediately, the actual
+    /// HTTP round-trip runs on a background thread, and the
+    /// dispatcher-marshalled state mutations push the UI through
+    /// "Prüfe..." → either back to "Auf Updates prüfen" (no update)
+    /// or hidden behind the install block (update found).
+    /// </summary>
+    private void OnCheckForUpdatesClick(object sender, RoutedEventArgs e)
+    {
+        var app = (App)Application.Current;
+        app.CheckForUpdatesNow();
+    }
 }
