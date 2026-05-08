@@ -7,7 +7,7 @@
         mc:Ignorable="d"
         Title="VAM ACARS Client"
         Width="480"
-        Height="620"
+        Height="960"
         ResizeMode="CanMinimize"
         WindowStartupLocation="CenterScreen"
         Background="#1c1c23"

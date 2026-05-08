@@ -34,9 +34,10 @@
 			"Version: x.y.z" line in the EINSTELLUNGEN card. This is
 			the source of truth for SemVer; vpk pack reads it via
 			AssemblyInformationalVersion. Bump on every release —
-			0.1.0 is the first M5-shipped build.
+			0.1.0 was the first M5-shipped build, 0.1.1 added the
+			no-scroll layout (Window Height 620 → 960).
 		-->
-		<Version>0.1.0</Version>
+		<Version>0.1.1</Version>
 
 		<!--
 			ApplicationIcon controls the .exe's file-explorer icon and
