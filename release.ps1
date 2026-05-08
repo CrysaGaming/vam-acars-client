@@ -160,6 +160,22 @@ if ($LASTEXITCODE -ne 0) {
     throw "dotnet publish failed (exit $LASTEXITCODE)"
 }
 
+# Belt-and-braces existence check on the published exe. PowerShell's
+# $LASTEXITCODE for `dotnet publish` is unreliable when the new
+# MSBuild Terminal Logger is active (10.0.x SDKs default to it):
+# native-MSBuild errors like NETSDK1152 print "fehlerhaft mit X
+# Fehler(n)" to stdout but the exit code can still come back 0
+# because the redirected output stream confuses the propagation
+# chain. So we positively verify the artefact landed before handing
+# off to vpk — vpk itself only fails AFTER it can't find the exe
+# with a less-actionable error message ("I searched the following
+# paths and none exist:..."). Catching it here keeps the chain of
+# blame short.
+$expectedExe = Join-Path $PublishDir $MainExe
+if (-not (Test-Path $expectedExe)) {
+    throw "Publish completed but $MainExe is missing from $PublishDir. Re-check the dotnet publish output above for errors (NETSDK1152 duplicate-output is a common cause)."
+}
+
 # ---- vpk pack --------------------------------------------------------------
 # Optionally pull the previous release first so vpk can build a delta
 # against it. Skipped when -Publish isn't set (no point downloading if
@@ -200,6 +216,18 @@ Write-Host "Running vpk pack (id=$VelopackId, version=$Version)..."
     --packTitle $PackTitle
 if ($LASTEXITCODE -ne 0) {
     throw "vpk pack failed (exit $LASTEXITCODE)"
+}
+
+# Same defensive existence check as the publish step. vpk's exit code
+# propagates more reliably than dotnet's, but it has its own quirks
+# (e.g. when stdin is non-interactive vpk can FTL-log without
+# propagating non-zero), so a positive artefact check belongs here
+# too. Setup.exe is vpk's user-facing first-time installer; if that
+# didn't get written, the release is unshippable regardless of what
+# the rest of the pipeline thinks.
+$expectedSetup = Join-Path $ReleasesDir "$VelopackId-win-Setup.exe"
+if (-not (Test-Path $expectedSetup)) {
+    throw "vpk pack completed but $VelopackId-win-Setup.exe is missing from $ReleasesDir. Re-check the vpk output above; common cause is the publish exe missing or having a non-Velopack Main entry point."
 }
 
 Write-Host ""
