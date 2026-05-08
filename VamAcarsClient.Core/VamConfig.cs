@@ -69,6 +69,17 @@ public sealed class VamConfig
         /// rewritten whenever the user toggles a preference in the
         /// MainWindow's EINSTELLUNGEN card.</summary>
         public string PreferencesFileName { get; init; } = "preferences.json";
+
+        /// <summary>Filename of the crash-recovery session marker
+        /// (option #13). Written by AcarsClientService.StartAsync
+        /// after a successful Connect; deleted by StopAsync on a
+        /// clean disconnect. If the file is still on disk at next
+        /// launch, the previous session ended ungracefully (app
+        /// crash, OS reboot, force-kill) and the tray-app surfaces
+        /// a "letzte Sitzung wiederherstellen?" banner. JSON,
+        /// plaintext — same rationale as flight-context: not a
+        /// secret, easier to debug than DPAPI-wrapped bytes.</summary>
+        public string SessionMarkerFileName { get; init; } = "session-marker.json";
     }
 
     public sealed class HeartbeatSection

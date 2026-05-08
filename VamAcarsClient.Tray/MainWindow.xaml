@@ -270,6 +270,131 @@
         <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
             <StackPanel>
 
+                <!--
+                    Recovery banner (option #13). Visible only when
+                    State.HasRecoverableSession=true — i.e. when the
+                    previous session ended without a clean Stop and the
+                    SessionMarker file is still on disk. The banner
+                    lets the pilot pick up where they left off
+                    (Wiederverbinden, which pre-fills the form fields
+                    from the marker) or dismiss the recovery
+                    (Verwerfen, which deletes the marker so the banner
+                    doesn't re-appear next launch).
+
+                    AccentYellow border + tinted background so it
+                    visually flags as "needs your attention" without
+                    looking like an error (which would be red). Sits
+                    at the very top of the ScrollViewer so it's the
+                    first thing the user sees on opening the window
+                    after a crash — and it disappears entirely
+                    (Visibility=Collapsed via BoolToVis) on normal
+                    startups so it doesn't take up vertical space.
+                -->
+                <Border CornerRadius="6"
+                        BorderThickness="1"
+                        BorderBrush="{StaticResource AccentYellow}"
+                        Background="{StaticResource BgSecondary}"
+                        Padding="16"
+                        Margin="0,0,0,12"
+                        Visibility="{Binding HasRecoverableSession, Converter={StaticResource BoolToVis}}">
+                    <StackPanel>
+                        <TextBlock Text="LETZTE SITZUNG"
+                                   Style="{StaticResource SectionLabel}"
+                                   Foreground="{StaticResource AccentYellow}" />
+
+                        <TextBlock Text="{Binding RecoverableSessionSummary, FallbackValue='—', TargetNullValue='—'}"
+                                   Foreground="{StaticResource TextPrimary}"
+                                   FontSize="13"
+                                   FontWeight="SemiBold"
+                                   TextWrapping="Wrap" />
+
+                        <TextBlock Text="Die letzte Sitzung wurde nicht sauber beendet. Wiederverbinden füllt die Form-Felder vor; Verwerfen löscht den Wiederherstellungs-Marker."
+                                   Margin="0,6,0,0"
+                                   FontSize="11"
+                                   Foreground="{StaticResource TextMuted}"
+                                   TextWrapping="Wrap" />
+
+                        <!--
+                            Two-button row. Resume is the AccentBlue
+                            primary action; Verwerfen is subdued
+                            BgSecondary with a border, matching the
+                            pattern from "Auf Updates prüfen" + the
+                            re-pair button. Buttons sit side-by-side
+                            in a horizontal StackPanel.
+                        -->
+                        <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
+                            <Button x:Name="ResumeSessionButton"
+                                    Click="OnResumeSessionClick"
+                                    Padding="14,6"
+                                    Background="{StaticResource AccentBlue}"
+                                    Foreground="{StaticResource BgPrimary}"
+                                    FontSize="12"
+                                    FontWeight="SemiBold"
+                                    BorderThickness="0"
+                                    Cursor="Hand"
+                                    Content="Wiederverbinden"
+                                    ToolTip="Übernimmt Callsign + Departure + Arrival aus der unterbrochenen Sitzung in die FLUG-KONTEXT-Felder. Du klickst danach selbst Verbinden.">
+                                <Button.Template>
+                                    <ControlTemplate TargetType="Button">
+                                        <Border Background="{TemplateBinding Background}"
+                                                CornerRadius="4"
+                                                Padding="{TemplateBinding Padding}">
+                                            <ContentPresenter HorizontalAlignment="Center"
+                                                              VerticalAlignment="Center"
+                                                              TextElement.Foreground="{TemplateBinding Foreground}" />
+                                        </Border>
+                                    </ControlTemplate>
+                                </Button.Template>
+                                <Button.Style>
+                                    <Style TargetType="Button">
+                                        <Style.Triggers>
+                                            <Trigger Property="IsMouseOver" Value="True">
+                                                <Setter Property="Opacity" Value="0.85" />
+                                            </Trigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </Button.Style>
+                            </Button>
+
+                            <Button x:Name="DiscardSessionButton"
+                                    Click="OnDiscardSessionClick"
+                                    Margin="8,0,0,0"
+                                    Padding="14,6"
+                                    Background="{StaticResource BgSecondary}"
+                                    Foreground="{StaticResource TextPrimary}"
+                                    FontSize="12"
+                                    BorderThickness="1"
+                                    BorderBrush="{StaticResource BorderMuted}"
+                                    Cursor="Hand"
+                                    Content="Verwerfen"
+                                    ToolTip="Löscht den Wiederherstellungs-Marker. Das Banner erscheint nicht mehr — die unterbrochene Sitzung wird verworfen.">
+                                <Button.Template>
+                                    <ControlTemplate TargetType="Button">
+                                        <Border Background="{TemplateBinding Background}"
+                                                BorderBrush="{TemplateBinding BorderBrush}"
+                                                BorderThickness="{TemplateBinding BorderThickness}"
+                                                CornerRadius="4"
+                                                Padding="{TemplateBinding Padding}">
+                                            <ContentPresenter HorizontalAlignment="Center"
+                                                              VerticalAlignment="Center"
+                                                              TextElement.Foreground="{TemplateBinding Foreground}" />
+                                        </Border>
+                                    </ControlTemplate>
+                                </Button.Template>
+                                <Button.Style>
+                                    <Style TargetType="Button">
+                                        <Style.Triggers>
+                                            <Trigger Property="IsMouseOver" Value="True">
+                                                <Setter Property="Background" Value="{StaticResource BgPrimary}" />
+                                            </Trigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </Button.Style>
+                            </Button>
+                        </StackPanel>
+                    </StackPanel>
+                </Border>
+
                 <!-- Connection card -->
                 <Border Style="{StaticResource CardBorder}">
                     <StackPanel>

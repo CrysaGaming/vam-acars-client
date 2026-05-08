@@ -89,6 +89,21 @@ public partial class App : Application
     private PreferencesStore? _preferencesStore;
 
     /// <summary>
+    /// Standalone read-only handle on the crash-recovery marker file
+    /// (option #13). Used at <see cref="OnStartup"/> to detect a stale
+    /// marker from a previously-crashed session, and at
+    /// <see cref="DiscardRecoverableSession"/> to delete the marker
+    /// when the user dismisses the recovery banner without resuming.
+    ///
+    /// The MARKER's WRITE/CLEAR LIFECYCLE during a normal Connect/
+    /// Disconnect cycle is owned by <see cref="AcarsClientService"/>'s
+    /// own <c>SessionMarkerStore</c> instance — both stores point at
+    /// the same on-disk file (no per-instance state), so the dual-
+    /// ownership doesn't risk inconsistency.
+    /// </summary>
+    private SessionMarkerStore? _sessionMarkerStore;
+
+    /// <summary>
     /// The flight context loaded from disk at startup, or null if no
     /// previous context exists (first launch) or the saved file
     /// couldn't be read. <see cref="MainWindow"/> reads this in its
@@ -321,6 +336,39 @@ public partial class App : Application
         _logger.LogInformation(
             "Preferences loaded: AudioCueEnabled={Enabled}",
             State.AudioCueEnabled);
+
+        // ─── Crash-recovery probe (option #13) ─────────────────────────
+        // If a SessionMarker is on disk, the previous session ended
+        // without a clean Stop. Surface it on the bound state so the
+        // MainWindow's recovery banner becomes visible. This runs
+        // BEFORE the AcarsClientService is constructed because
+        // _sessionMarkerStore lives inside the service — but a stand-
+        // alone read-only probe needs no service infrastructure, just
+        // the same on-disk file. We instantiate a one-shot store here
+        // for the read; the service's owned instance handles
+        // write/clear during normal lifecycle.
+        //
+        // Stale markers (e.g. days old) surface as banners just like
+        // fresh ones — the banner shows elapsed time so the user can
+        // gauge whether to resume or discard. We don't auto-discard
+        // by age threshold because what counts as "stale" is per-user
+        // (some pilots take long lunch breaks mid-flight).
+        _sessionMarkerStore = new SessionMarkerStore(Config);
+        try
+        {
+            var marker = _sessionMarkerStore.TryLoad();
+            if (marker is not null)
+            {
+                State.RecoverableSession = marker;
+                _logger.LogInformation(
+                    "Recoverable session detected: callsign={Callsign}, started={StartedAt}",
+                    marker.Callsign, marker.StartedAtUtc);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "SessionMarkerStore.TryLoad failed during startup");
+        }
 
         // ─── Velopack updater (M5) ─────────────────────────────────────
         // Construct after AutoStart so the update-check fires while the
@@ -679,6 +727,111 @@ public partial class App : Application
         {
             State.IsProbingSim = false;
         }
+    }
+
+    /// <summary>
+    /// Drives the "Wiederverbinden" button on the recovery banner
+    /// (option #13). Translates the in-memory marker back into a
+    /// <see cref="FlightContext"/>, pre-fills the MainWindow form so
+    /// the user can sanity-check what's about to be sent, and clears
+    /// the marker state. Does NOT auto-trigger Connect — the user
+    /// still has to tick the pre-flight checklist + click Verbinden.
+    /// That extra step is intentional: a crashed session might have
+    /// happened mid-flight at FL360, and we'd rather have the pilot
+    /// confirm the situation than silently re-launch the connection
+    /// before they've reoriented in MSFS.
+    ///
+    /// Form pre-fill writes through to MainWindow's bound TextBox
+    /// fields directly. The user can then edit before clicking
+    /// Verbinden — which is the existing flow's natural shape.
+    ///
+    /// We don't re-write the marker here either — the existing one
+    /// stays on disk until either (a) a successful Connect overwrites
+    /// it via AcarsClientService.StartAsync, or (b) the user clicks
+    /// Verwerfen on the banner. State.RecoverableSession is cleared
+    /// so the banner disappears; the user knows their action took
+    /// effect.
+    ///
+    /// No-op (returns immediately) if the state has no marker — should
+    /// only happen if this is called via a stale UI event after the
+    /// banner already cleared, but defensive bail is cheap.
+    /// </summary>
+    public Task ResumeRecoverableSessionAsync()
+    {
+        var marker = State.RecoverableSession;
+        if (marker is null)
+        {
+            _logger?.LogDebug("ResumeRecoverableSessionAsync called with no marker present — no-op");
+            return Task.CompletedTask;
+        }
+
+        _logger?.LogInformation(
+            "Resume requested for recoverable session: callsign={Callsign}",
+            marker.Callsign);
+
+        // Convert + persist as the new last-used context. SaveFlightContext
+        // is also called inside OnConnectClick post-success, so the
+        // double-save here is mildly redundant — but it ensures that
+        // even if the user closes the window without clicking Verbinden,
+        // the flight-context.json now reflects the recovered marker
+        // rather than whatever was last saved.
+        var context = marker.ToFlightContext();
+        SaveFlightContext(context);
+        LastFlightContext = context;
+
+        // Pre-fill the form. The MainWindow may not be open yet
+        // (recovery from a tray-only launch), but if it is, push the
+        // values straight into the bound TextBoxes so the user sees
+        // exactly what's about to be sent. We don't try to open the
+        // window here — the click that just landed implies the window
+        // is already visible.
+        if (_mainWindow is not null)
+        {
+            _mainWindow.CallsignBox.Text = context.Callsign;
+            _mainWindow.NetworkBox.Text = context.Network;
+            _mainWindow.DeparturBox.Text = context.DepartureIcao ?? string.Empty;
+            _mainWindow.ArrivalBox.Text = context.ArrivalIcao ?? string.Empty;
+        }
+
+        // Clear the in-memory marker so the banner hides. The on-disk
+        // file is left alone — the next successful Connect overwrites
+        // it via AcarsClientService.StartAsync. If the user closes the
+        // app before reconnecting, the marker stays on disk and the
+        // banner re-appears next launch (which is the right behaviour
+        // — they haven't actually reconnected yet).
+        State.RecoverableSession = null;
+        State.StatusMessage = $"Sitzung wiederhergestellt: {context.Callsign}. Pre-flight prüfen, dann Verbinden.";
+
+        return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// Drives the "Verwerfen" button on the recovery banner (option
+    /// #13). Deletes the marker from disk + clears the in-memory
+    /// state, so the banner disappears and won't return on next
+    /// launch. Idempotent and IO-failure-tolerant.
+    ///
+    /// We unconditionally clear the in-memory state (so the banner
+    /// hides even if disk-clear fails) and log the IO error. The
+    /// next launch would re-show the banner if the disk-clear
+    /// failed silently here — minor UX nuisance, not worth blocking
+    /// the dismiss gesture over.
+    /// </summary>
+    public void DiscardRecoverableSession()
+    {
+        _logger?.LogInformation("Discard requested for recoverable session");
+
+        try
+        {
+            _sessionMarkerStore?.Clear();
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogWarning(ex, "SessionMarkerStore.Clear failed during discard — banner may re-appear");
+        }
+
+        State.RecoverableSession = null;
+        State.StatusMessage = "Wiederherstellung verworfen.";
     }
 
     /// <summary>

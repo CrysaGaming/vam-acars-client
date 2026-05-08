@@ -46,6 +46,15 @@ public sealed class AcarsClientService : IDisposable
     private readonly Dispatcher _uiDispatcher;
     private readonly ILogger<AcarsClientService> _logger;
 
+    /// <summary>
+    /// Crash-recovery marker store (option #13). Owned by this service
+    /// because the marker's write/clear lifecycle is tightly coupled
+    /// to StartAsync/StopAsync — having a separate component manage it
+    /// would just shuffle responsibility for the exact same calls.
+    /// Constructed once in the ctor so each Start doesn't re-allocate.
+    /// </summary>
+    private readonly SessionMarkerStore _sessionMarkerStore;
+
     // Live during a heartbeat session; null between Stop and Start.
     private SimConnectClient? _sim;
     private HeartbeatService? _heartbeat;
@@ -76,6 +85,7 @@ public sealed class AcarsClientService : IDisposable
         _state = state;
         _uiDispatcher = uiDispatcher;
         _logger = loggerFactory.CreateLogger<AcarsClientService>();
+        _sessionMarkerStore = new SessionMarkerStore(config);
     }
 
     /// <summary>
@@ -198,6 +208,27 @@ public sealed class AcarsClientService : IDisposable
             s.StatusMessage = "Verbunden. Warte auf erste Heartbeat-Antwort…";
         });
 
+        // ─── 5. Crash-recovery marker (option #13) ─────────────────────
+        // Write the session marker AFTER everything else has succeeded
+        // so a partially-failed Start (e.g., heartbeat-service threw
+        // post-construction) doesn't leave a recovery breadcrumb for a
+        // session that never actually started. Any IO failure here is
+        // logged but doesn't abort the connect — losing crash-recovery
+        // is annoying, but not worth aborting a flight that's otherwise
+        // ready to go.
+        try
+        {
+            var marker = SessionMarker.FromFlightContext(flightContext, DateTimeOffset.UtcNow);
+            _sessionMarkerStore.Save(marker);
+            _logger.LogDebug(
+                "Session marker written for crash-recovery (callsign={Callsign})",
+                flightContext.Callsign);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "SessionMarkerStore.Save failed — crash recovery will be unavailable");
+        }
+
         _logger.LogInformation("ACARS client started successfully");
         return true;
     }
@@ -275,6 +306,25 @@ public sealed class AcarsClientService : IDisposable
             // next user click.
             s.ResetPreflightChecklist();
         });
+
+        // ─── Crash-recovery marker cleanup (option #13) ────────────────
+        // Delete the session marker AFTER the full teardown ran cleanly.
+        // The marker's purpose is to flag "the previous session ended
+        // without StopAsync running" — so as long as we got here, by
+        // definition the session ended cleanly and the marker should go.
+        // Idempotent: missing-file is the success case for Clear().
+        // IO failure here is logged but not surfaced — the recovery
+        // banner on next launch is a minor UX nuisance, not worth
+        // failing the disconnect over.
+        try
+        {
+            _sessionMarkerStore.Clear();
+            _logger.LogDebug("Session marker cleared on clean Stop");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "SessionMarkerStore.Clear failed — recovery banner may show on next launch");
+        }
 
         _logger.LogInformation("ACARS client stopped");
     }

@@ -77,6 +77,13 @@ public partial class MainWindow : Window
     {
         var app = (App)Application.Current;
         app.State?.RaisePhaseDisplayChanged();
+
+        // Option #13: also refresh the recovery banner's elapsed-time
+        // line so "vor 3 Min unterbrochen" → "vor 4 Min unterbrochen"
+        // ticks live while the banner is visible. Cheap when no marker
+        // is present (the property's getter returns null in that case),
+        // so we don't bother branching on HasRecoverableSession.
+        app.State?.RaiseRecoverableSessionSummaryChanged();
     }
 
     /// <summary>
@@ -379,6 +386,36 @@ public partial class MainWindow : Window
     {
         var app = (App)Application.Current;
         await app.ProbeSimAsync();
+    }
+
+    /// <summary>
+    /// "Wiederverbinden" button on the recovery banner (option #13).
+    /// Delegates to <see cref="App.ResumeRecoverableSessionAsync"/>
+    /// which translates the marker back into a FlightContext, pre-fills
+    /// the form, and clears the in-memory recoverable-session state
+    /// (which collapses the banner via the BoolToVis binding).
+    ///
+    /// Async-void for the same reasons as the other click handlers
+    /// here. App.ResumeRecoverableSessionAsync currently completes
+    /// synchronously (it's a Task only for future-proofing), so the
+    /// await returns essentially immediately.
+    /// </summary>
+    private async void OnResumeSessionClick(object sender, RoutedEventArgs e)
+    {
+        var app = (App)Application.Current;
+        await app.ResumeRecoverableSessionAsync();
+    }
+
+    /// <summary>
+    /// "Verwerfen" button on the recovery banner (option #13).
+    /// Delegates to <see cref="App.DiscardRecoverableSession"/> which
+    /// deletes the marker file and clears the bound state. Banner
+    /// hides immediately as a side effect of the state mutation.
+    /// </summary>
+    private void OnDiscardSessionClick(object sender, RoutedEventArgs e)
+    {
+        var app = (App)Application.Current;
+        app.DiscardRecoverableSession();
     }
 
     /// <summary>

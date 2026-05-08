@@ -467,6 +467,122 @@ public class AcarsClientState : INotifyPropertyChanged
         set => SetField(ref _isProbingSim, value);
     }
 
+    // ─── Crash-recovery (option #13) ─────────────────────────────────
+    //
+    // Non-null when App.OnStartup found a SessionMarker on disk —
+    // means the previous session ended without a clean Stop (app
+    // crash, OS reboot, force-kill). The MainWindow shows a banner
+    // bound to HasRecoverableSession that offers Wiederverbinden /
+    // Verwerfen.
+    //
+    // Lifecycle:
+    //   - Set in App.OnStartup when SessionMarkerStore.TryLoad() returns
+    //     a non-null marker.
+    //   - Cleared (set to null) by App.DiscardRecoverableSession when
+    //     the user clicks Verwerfen or after a successful resume-Connect.
+    //   - Never written from inside this class — the marker file is
+    //     owned by AcarsClientService, this property is just the
+    //     UI-bound mirror.
+    //
+    // Why expose the full SessionMarker rather than just a "has-it" bool:
+    // the banner needs to render the captured callsign and start-time
+    // so the user can recognize which flight is being offered for
+    // recovery. A bool would force a second binding for the details.
+
+    private VamAcarsClient.Core.SessionMarker? _recoverableSession;
+    /// <summary>
+    /// The marker found at startup, or null if no recovery is needed.
+    /// MainWindow's banner binds to <see cref="HasRecoverableSession"/>
+    /// for visibility and to this property's fields (Callsign,
+    /// DepartureIcao, ArrivalIcao, StartedAtUtc) for the body text.
+    /// </summary>
+    public VamAcarsClient.Core.SessionMarker? RecoverableSession
+    {
+        get => _recoverableSession;
+        set
+        {
+            if (SetField(ref _recoverableSession, value))
+            {
+                // Both computed properties depend on this field — fire
+                // their PropertyChanged so any binding refreshes.
+                PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(HasRecoverableSession)));
+                PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(RecoverableSessionSummary)));
+            }
+        }
+    }
+
+    /// <summary>
+    /// True iff <see cref="RecoverableSession"/> is non-null. Drives
+    /// the recovery-banner's Visibility via BoolToVis converter.
+    /// Computed because tying Visibility directly to a nullable
+    /// reference would require a custom IValueConverter — a bool is
+    /// simpler and re-uses the existing converter from EINSTELLUNGEN.
+    /// </summary>
+    public bool HasRecoverableSession => _recoverableSession is not null;
+
+    /// <summary>
+    /// Human-readable one-liner for the recovery banner, e.g.
+    /// "NGN901 EDDF→EDDM (vor 12 Min unterbrochen)". Returns null when
+    /// no marker is present so the binding's TargetNullValue can
+    /// render a fallback. Time-elapsed is computed on read; the
+    /// MainWindow's per-second DispatcherTimer also pokes
+    /// PropertyChanged on this so the "vor X Min" ticks live.
+    /// </summary>
+    public string? RecoverableSessionSummary
+    {
+        get
+        {
+            var m = _recoverableSession;
+            if (m is null) return null;
+
+            // Compose the route portion. EDDF→EDDM if both ends known,
+            // bare callsign otherwise. We deliberately render the
+            // unicode arrow rather than a hyphen — visually distinguishes
+            // a route from a date-range or other dash-shaped data.
+            string route;
+            if (!string.IsNullOrWhiteSpace(m.DepartureIcao) && !string.IsNullOrWhiteSpace(m.ArrivalIcao))
+            {
+                route = $"{m.Callsign} {m.DepartureIcao}→{m.ArrivalIcao}";
+            }
+            else
+            {
+                route = m.Callsign;
+            }
+
+            // Elapsed-time portion. Parse failure (corrupted timestamp)
+            // degrades to bare route — never throw, never display garbage.
+            if (DateTimeOffset.TryParse(m.StartedAtUtc, out var startedAt))
+            {
+                var elapsed = DateTimeOffset.UtcNow - startedAt;
+                if (elapsed.TotalSeconds < 0)
+                {
+                    return route; // clock-skew; skip elapsed
+                }
+
+                string ago;
+                if (elapsed.TotalMinutes < 1) ago = "vor wenigen Sekunden";
+                else if (elapsed.TotalMinutes < 60) ago = $"vor {(int)elapsed.TotalMinutes} Min";
+                else if (elapsed.TotalHours < 24) ago = $"vor {(int)elapsed.TotalHours} Std";
+                else ago = $"vor {(int)elapsed.TotalDays} Tagen";
+
+                return $"{route} ({ago} unterbrochen)";
+            }
+
+            return route;
+        }
+    }
+
+    /// <summary>
+    /// Pokes the bound recovery-banner to re-evaluate
+    /// <see cref="RecoverableSessionSummary"/>'s elapsed-time portion.
+    /// Same pattern as <see cref="RaisePhaseDisplayChanged"/>; called
+    /// from the same per-second DispatcherTimer in MainWindow.
+    /// </summary>
+    public void RaiseRecoverableSessionSummaryChanged()
+    {
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(RecoverableSessionSummary)));
+    }
+
     // ─── Updates (Velopack) ──────────────────────────────────────────
 
     private string _installedVersion = "dev";
