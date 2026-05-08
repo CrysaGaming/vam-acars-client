@@ -51,6 +51,15 @@ public sealed class VamConfig
         /// <summary>Filename of the encrypted token blob inside the local
         /// app-data folder.</summary>
         public string TokenFileName { get; init; } = "token.bin";
+
+        /// <summary>Filename of the persisted last-used FlightContext
+        /// (callsign / network / departure / arrival) inside the local
+        /// app-data folder. JSON, plaintext — these are user-visible
+        /// flight-plan fields, not secrets, so no DPAPI wrapping. The
+        /// tray-app reads it at startup to pre-populate the form, and
+        /// rewrites it after every successful Connect, so the user
+        /// doesn't have to retype NGN901 / EDDF / EDDM every launch.</summary>
+        public string FlightContextFileName { get; init; } = "flight-context.json";
     }
 
     public sealed class HeartbeatSection

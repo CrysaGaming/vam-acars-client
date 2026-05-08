@@ -27,6 +27,35 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        PopulateFromSavedContext();
+    }
+
+    /// <summary>
+    /// Pre-populates the four flight-plan TextBoxes from the
+    /// FlightContext that <see cref="App.OnStartup"/> loaded from disk.
+    /// Falls through silently when no saved context exists (first
+    /// launch or load failure) — the XAML's baked-in defaults
+    /// (NGN901 / Offline / EDDF / EDDM) stay in place.
+    ///
+    /// Runs in the constructor (after InitializeComponent so the
+    /// x:Name'd TextBox fields exist) rather than on Loaded so the
+    /// UI never flickers from default → restored values: by the time
+    /// the window is shown the boxes already hold the right text.
+    ///
+    /// We translate null/empty <c>DepartureIcao</c> + <c>ArrivalIcao</c>
+    /// to empty strings rather than the XAML defaults — if the user
+    /// last connected without a flight plan, that's the state they'd
+    /// expect to come back to, not the boilerplate EDDF/EDDM.
+    /// </summary>
+    private void PopulateFromSavedContext()
+    {
+        var saved = ((App)Application.Current).LastFlightContext;
+        if (saved is null) return;
+
+        CallsignBox.Text = saved.Callsign;
+        NetworkBox.Text = saved.Network;
+        DeparturBox.Text = saved.DepartureIcao ?? string.Empty;
+        ArrivalBox.Text = saved.ArrivalIcao ?? string.Empty;
     }
 
     /// <summary>
@@ -96,6 +125,15 @@ public partial class MainWindow : Window
                         : ArrivalBox.Text.Trim().ToUpperInvariant(),
                 };
                 await service.StartAsync(flightContext);
+
+                // Service started without throwing → the values the
+                // user just connected with are worth preserving for
+                // next launch. Done after StartAsync (not before) so
+                // we never persist a context the user immediately
+                // saw fail. App.SaveFlightContext swallows its own
+                // exceptions so a write error here can't kill the
+                // connect flow.
+                app.SaveFlightContext(flightContext);
             }
         }
         finally

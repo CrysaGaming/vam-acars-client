@@ -31,8 +31,6 @@ namespace VamAcarsClient.Tray;
 ///   - Auto-start with Windows (registry HKCU\…\Run integration).
 ///   - Show pairing UI inside the window. For now the user pairs via
 ///     the Cli in Mode 1; the tray-app reads the same TokenStore.
-///   - Persist last-used FlightContext to disk so the user doesn't
-///     re-enter callsign/dep/arr every restart.
 /// </summary>
 public partial class App : Application
 {
@@ -71,6 +69,25 @@ public partial class App : Application
     /// future caching wouldn't accidentally diverge).
     /// </summary>
     private TokenStore? _tokenStore;
+
+    /// <summary>
+    /// Persistence for the last-used flight plan. Loaded once at
+    /// startup into <see cref="LastFlightContext"/>, written via
+    /// <see cref="SaveFlightContext"/> after every successful
+    /// Connect. Single instance so we don't keep paying the JSON-
+    /// options init cost on each save.
+    /// </summary>
+    private FlightContextStore? _flightContextStore;
+
+    /// <summary>
+    /// The flight context loaded from disk at startup, or null if no
+    /// previous context exists (first launch) or the saved file
+    /// couldn't be read. <see cref="MainWindow"/> reads this in its
+    /// constructor to pre-populate the form fields, falling back to
+    /// the XAML-baked defaults (NGN901 / Offline / EDDF / EDDM) when
+    /// null.
+    /// </summary>
+    public FlightContext? LastFlightContext { get; private set; }
 
     /// <summary>
     /// Heartbeat-lifecycle owner. Created once in OnStartup, reused
@@ -217,6 +234,31 @@ public partial class App : Application
             State.HasToken = false;
         }
 
+        // Last-used flight plan: read once at startup, exposed via
+        // LastFlightContext so MainWindow's ctor can pre-populate
+        // the form. Failures (corrupt JSON, schema mismatch, IO
+        // errors) all surface as null — see FlightContextStore for
+        // the complete fallback semantics.
+        _flightContextStore = new FlightContextStore(Config);
+        try
+        {
+            LastFlightContext = _flightContextStore.TryLoad();
+            if (LastFlightContext is not null)
+            {
+                _logger.LogInformation(
+                    "Restored flight context: callsign={Callsign}, network={Network}, dep={Dep}, arr={Arr}",
+                    LastFlightContext.Callsign,
+                    LastFlightContext.Network,
+                    LastFlightContext.DepartureIcao,
+                    LastFlightContext.ArrivalIcao);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "FlightContextStore load failed during startup");
+            LastFlightContext = null;
+        }
+
         // ─── HttpClient + AcarsClientService ──────────────────────────
         // Single HttpClient for the process. AcarsClientService borrows
         // it (doesn't own it) so we can recycle Start/Stop without
@@ -300,6 +342,34 @@ public partial class App : Application
         if (e.PropertyName == nameof(AcarsClientState.ConnectionStatus))
         {
             UpdateTrayIcon();
+        }
+    }
+
+    /// <summary>
+    /// Persist the given flight context to disk. Called by
+    /// <see cref="MainWindow.OnConnectClick"/> after a successful
+    /// <see cref="AcarsClientService.StartAsync"/>, so the next launch
+    /// picks up exactly the values that just succeeded — not whatever
+    /// half-edited state the user might have had if persistence were
+    /// tied to the form's KeyDown.
+    ///
+    /// Failures are logged and swallowed: a write error here is a
+    /// minor convenience hit (user retypes once next time), not a
+    /// reason to break the connect flow that just finished.
+    /// </summary>
+    public void SaveFlightContext(FlightContext context)
+    {
+        if (_flightContextStore is null || context is null) return;
+        try
+        {
+            _flightContextStore.Save(context);
+            _logger?.LogDebug(
+                "Persisted flight context: callsign={Callsign}, dep={Dep}, arr={Arr}",
+                context.Callsign, context.DepartureIcao, context.ArrivalIcao);
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogWarning(ex, "FlightContextStore save failed");
         }
     }
 
