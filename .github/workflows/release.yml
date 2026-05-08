@@ -1,0 +1,168 @@
+# =============================================================================
+# .github/workflows/release.yml — automatic Velopack release on tag push
+# =============================================================================
+#
+# Trigger: pushing a tag matching v*.*.* (e.g. `git tag v0.1.2 && git push --tags`).
+# The workflow then builds, packs, and publishes a release to GitHub.
+#
+# Mirrors what `./release.ps1 -Publish` does locally — same script, same
+# verbs, same output. The only thing this workflow adds is two preflight
+# steps that don't apply to local dev:
+#
+#   1. SimConnect dll verification. The Core.csproj references two files
+#      from the MSFS 2024 SDK (Microsoft.FlightSimulator.SimConnect.dll
+#      managed wrapper + native SimConnect.dll). The GH Actions runner
+#      has no MSFS SDK install, so we vendor those two files in the repo
+#      under external/simconnect/ — see external/simconnect/README.md
+#      for the layout. The csproj resolves them via $(MSFS2024SDKPath),
+#      which we set below to point at the vendored copy.
+#
+#   2. Tag-vs-csproj version sanity check. release.ps1 reads <Version>
+#      from VamAcarsClient.Tray.csproj as its source of truth. The tag
+#      that triggered this workflow needs to match, otherwise we'd
+#      publish (e.g.) 0.1.0 to a v0.1.2 tag — confusing for users
+#      and Velopack's update-detection. Fail early if they drift.
+#
+# Why not just generate the version from the tag? Because csproj
+# <Version> drives AssemblyInformationalVersion and the in-app
+# "Version: x.y.z" display. Driving from the tag would mean those
+# show up wrong on local dev builds (no tag) until the developer
+# remembers to bump csproj manually. Source of truth: csproj.
+# Trigger: tag matching csproj. One direction, easy mental model.
+#
+# Permissions: contents: write is the minimum needed for vpk to
+# create a Release and upload assets via the standard
+# secrets.GITHUB_TOKEN. We deliberately don't grant anything else.
+#
+# Pre-existing release at the same tag: GitHub doesn't allow uploading
+# to an existing release without first deleting it; vpk upload github
+# will fail with a clear error if you re-tag. To re-publish, delete
+# the GitHub release manually first, then re-tag and re-push. Same
+# guard as the local script.
+# =============================================================================
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+jobs:
+  release:
+    name: Build + publish v${{ github.ref_name }}
+    runs-on: windows-latest
+    permissions:
+      # vpk upload github needs to create the GitHub Release row +
+      # upload Setup.exe / nupkg / RELEASES assets. contents: write
+      # is the minimum scope that allows both. No other permissions.
+      contents: write
+
+    steps:
+      # We need the full history (depth=0) so release.ps1 can read
+      # csproj at HEAD without surprises. Default checkout-depth=1 is
+      # enough for csproj reading, but if we ever add changelog-from-
+      # commits to release.ps1 it'll need history; cheap to grab now.
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Set up the .NET 10 SDK. The 10.0.x family covers the actively-
+      # supported point releases (10.0.0, 10.0.1, ...) without locking
+      # us to a specific patch — actions/setup-dotnet picks the latest
+      # 10.0.x at workflow-run time. Matches the <TargetFramework> in
+      # both Core.csproj and Tray.csproj (net10.0-windows).
+      - name: Setup .NET 10 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      # Verify the vendored SimConnect dlls are actually present at
+      # the expected paths. If the user forgot to commit them, fail
+      # NOW with a clear message rather than letting MSBuild produce
+      # a less-helpful "couldn't find Microsoft.FlightSimulator.SimConnect"
+      # error 30 seconds into the publish. The csproj's HintPath uses
+      # $(MSFS2024SDKPath)\lib\managed\... so the layout under
+      # external/simconnect/ has to mirror the SDK's lib\managed
+      # convention.
+      - name: Verify vendored SimConnect dlls
+        shell: pwsh
+        run: |
+          $root = "$env:GITHUB_WORKSPACE\external\simconnect"
+          $managed = "$root\lib\managed\Microsoft.FlightSimulator.SimConnect.dll"
+          $native  = "$root\lib\SimConnect.dll"
+          if (-not (Test-Path $managed)) {
+            throw "Missing $managed`nVendor the SimConnect dlls under external/simconnect/lib/. See external/simconnect/README.md for the layout + sourcing instructions."
+          }
+          if (-not (Test-Path $native)) {
+            throw "Missing $native`nVendor the SimConnect dlls under external/simconnect/lib/. See external/simconnect/README.md for the layout + sourcing instructions."
+          }
+          Write-Host "SimConnect dlls present:"
+          Write-Host "  managed: $managed ($((Get-Item $managed).Length) bytes)"
+          Write-Host "  native:  $native ($((Get-Item $native).Length) bytes)"
+
+      # Tag-vs-csproj version sanity check. github.ref_name is "v0.1.2"
+      # for a tag push; strip the v-prefix and compare against the
+      # csproj <Version> element. If they don't match, abort before
+      # publish so we don't ship a misnamed release.
+      - name: Verify tag matches csproj version
+        shell: pwsh
+        run: |
+          $tagVersion = $env:GITHUB_REF_NAME -replace '^v', ''
+          $csproj = Get-Content "VamAcarsClient.Tray\VamAcarsClient.Tray.csproj" -Raw
+          if ($csproj -notmatch '<Version>([^<]+)</Version>') {
+            throw "Could not parse <Version> from VamAcarsClient.Tray.csproj"
+          }
+          $csprojVersion = $Matches[1].Trim()
+          if ($tagVersion -ne $csprojVersion) {
+            throw @"
+          Tag $env:GITHUB_REF_NAME implies version $tagVersion
+          but csproj <Version> is $csprojVersion.
+
+          Bump VamAcarsClient.Tray.csproj <Version> to $tagVersion,
+          commit, then re-tag (delete the bad tag with
+          'git tag -d $env:GITHUB_REF_NAME && git push origin :refs/tags/$env:GITHUB_REF_NAME'
+          then 'git tag $env:GITHUB_REF_NAME && git push --tags').
+          "@
+          }
+          Write-Host "Version OK: tag=$tagVersion, csproj=$csprojVersion"
+
+      # vpk is the Velopack CLI. Installed as a global dotnet tool, lands
+      # in ~\.dotnet\tools (on Windows: %USERPROFILE%\.dotnet\tools). The
+      # release.ps1 script has a fallback that resolves vpk.exe in that
+      # directory if it's not on PATH, so we don't need to re-export
+      # PATH after install.
+      - name: Install Velopack CLI (vpk)
+        run: dotnet tool install -g vpk
+
+      # The actual release. release.ps1 -Publish does:
+      #   1. dotnet publish (self-contained win-x64)
+      #   2. vpk download github (pulls latest release for delta)
+      #   3. vpk pack (produces Setup.exe + full+delta nupkg)
+      #   4. vpk upload github (creates GitHub release at v$Version)
+      #
+      # MSFS2024SDKPath env var redirects the csproj's SimConnect lookup
+      # at the vendored copy. GITHUB_TOKEN comes from the auto-provided
+      # secrets.GITHUB_TOKEN; the workflow's contents:write permission
+      # gives it the upload scope vpk needs.
+      - name: Run release.ps1 -Publish
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MSFS2024SDKPath: ${{ github.workspace }}\external\simconnect
+        run: ./release.ps1 -Publish
+
+      # Upload the produced artefacts as workflow artifacts as a backup.
+      # GitHub Releases is the primary distribution channel, but having
+      # a redundant copy under the workflow run is useful when debugging
+      # a botched release (lets you inspect the exact Setup.exe + nupkgs
+      # without having to delete-and-recreate the GitHub Release).
+      # Retention is GH's default (90d) which is fine for diagnostics.
+      - name: Upload release artefacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vam-acars-client-${{ github.ref_name }}
+          path: releases/
+          if-no-files-found: warn

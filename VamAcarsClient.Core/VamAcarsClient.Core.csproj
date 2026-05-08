@@ -5,6 +5,28 @@
 		<PlatformTarget>x64</PlatformTarget>
 		<ImplicitUsings>enable</ImplicitUsings>
 		<Nullable>enable</Nullable>
+
+		<!--
+			SimConnect SDK lookup-root. Resolves the paths to the managed
+			wrapper + native dll referenced below. Default points at the
+			canonical local-dev install path; override via env-var or
+			-p:MSFS2024SDKPath=... when the SDK lives elsewhere.
+
+			MSBuild reads environment variables as properties automatically,
+			so setting `$env:MSFS2024SDKPath = "..."` before `dotnet build`
+			works without any extra wiring. This is how the GitHub Actions
+			release workflow (see .github/workflows/release.yml) points the
+			build at vendored dlls under external/simconnect/ — the runner
+			has no MSFS install, but the two dlls are enough to compile-
+			and-link, and they're already shipped in every release-Setup.exe
+			anyway, so vendoring them isn't a redistribution change.
+
+			Why a property rather than two separate path properties:
+			the SDK has a stable internal layout (lib\managed\... +
+			lib\SimConnect.dll) that we'd duplicate across two settings
+			otherwise. One root, two derived paths, drift impossible.
+		-->
+		<MSFS2024SDKPath Condition="'$(MSFS2024SDKPath)' == ''">C:\MSFS 2024 SDK\SimConnect SDK</MSFS2024SDKPath>
 	</PropertyGroup>
 
 	<ItemGroup>
@@ -32,7 +54,7 @@
 			see the fix commit message for the reproduction trace.
 		-->
 		<Reference Include="Microsoft.FlightSimulator.SimConnect">
-			<HintPath>C:\MSFS 2024 SDK\SimConnect SDK\lib\managed\Microsoft.FlightSimulator.SimConnect.dll</HintPath>
+			<HintPath>$(MSFS2024SDKPath)\lib\managed\Microsoft.FlightSimulator.SimConnect.dll</HintPath>
 			<Private>true</Private>
 			<SpecificVersion>false</SpecificVersion>
 			<EmbedInteropTypes>false</EmbedInteropTypes>
@@ -49,7 +71,7 @@
 			Cannot be deduplicated against any Reference path
 			because there isn't one.
 		-->
-		<None Include="C:\MSFS 2024 SDK\SimConnect SDK\lib\SimConnect.dll">
+		<None Include="$(MSFS2024SDKPath)\lib\SimConnect.dll">
 			<Link>SimConnect.dll</Link>
 			<CopyToOutputDirectory>Always</CopyToOutputDirectory>
 			<Visible>false</Visible>
