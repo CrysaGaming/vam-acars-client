@@ -385,6 +385,111 @@ public sealed class AcarsClientService : IDisposable
     }
 
     /// <summary>
+    /// One-shot SimConnect probe to detect the currently loaded aircraft
+    /// (option #11). Lets the pre-flight UI show "this is the aircraft
+    /// MSFS has loaded right now" without requiring the user to click
+    /// Verbinden first — closes a real gap where the pilot only finds
+    /// out they're in the wrong airframe after heartbeats start flowing.
+    ///
+    /// # Behaviour
+    ///
+    /// - <see cref="IsRunning"/>=true → returns the live telemetry
+    ///   immediately (no second SimConnect connection; the running
+    ///   session already has fresh data).
+    /// - <see cref="IsRunning"/>=false → opens a temporary
+    ///   <see cref="SimConnectClient"/>, requests telemetry, waits up
+    ///   to <paramref name="timeout"/> for the first reply, then
+    ///   disposes. Returns null on COMException (MSFS not running),
+    ///   timeout, or any other error.
+    ///
+    /// The probe runs on a Task.Run worker — Connect() can block for
+    /// a few hundred ms during the SimConnect handshake, and we don't
+    /// want that on the UI thread. State mutations from the result are
+    /// the caller's responsibility (App.ProbeSimAsync wraps the call
+    /// and pushes results into <see cref="AcarsClientState"/>).
+    ///
+    /// # Why not run continuously
+    ///
+    /// We considered a permanent low-frequency probe-loop that pre-
+    /// populates DetectedAircraft* whenever MSFS is open, regardless of
+    /// the pilot's intent. Decided against it: SimConnect connections
+    /// have observable cost (one entry in MSFS's diagnostics, a small
+    /// memory footprint), and a tray-app shouldn't squat on the SDK
+    /// when the user hasn't expressed intent to fly. On-demand keeps
+    /// the contract clean: tray is idle until the user clicks something.
+    /// </summary>
+    public async Task<(string? Type, string? Registration, string? Title)?> ProbeAircraftAsync(TimeSpan? timeout = null)
+    {
+        var deadline = timeout ?? TimeSpan.FromSeconds(5);
+
+        // Live-session shortcut. _sim is non-null while the heartbeat
+        // service is active; LatestTelemetry may still be null in the
+        // first second after Start (poll-loop hasn't fired yet) — in
+        // that case fall through to a fresh probe rather than returning
+        // null, since the user explicitly asked for current state.
+        if (IsRunning && _sim?.LatestTelemetry is { } liveTele)
+        {
+            _logger.LogDebug("ProbeAircraftAsync: returning live telemetry from running session");
+            return (liveTele.AircraftType, liveTele.AircraftRegistration, liveTele.AircraftTitle);
+        }
+
+        // Standalone probe. Run the connect + wait + dispose on a
+        // background task so the UI thread isn't blocked.
+        return await Task.Run(() =>
+        {
+            SimConnectClient? probe = null;
+            try
+            {
+                probe = new SimConnectClient(_loggerFactory.CreateLogger<SimConnectClient>());
+                probe.Connect();
+
+                // SimConnect's RequestTelemetry is fire-and-forget; the
+                // reply lands on the pump-thread which writes to
+                // LatestTelemetry. We poll here with a short interval
+                // rather than wiring up the TelemetryReceived event —
+                // simpler control flow, and the worst-case latency is
+                // a single polling-interval (50ms).
+                var stopAt = DateTimeOffset.UtcNow + deadline;
+                probe.RequestTelemetry();
+
+                while (DateTimeOffset.UtcNow < stopAt)
+                {
+                    if (probe.LatestTelemetry is { } tele)
+                    {
+                        _logger.LogInformation(
+                            "ProbeAircraftAsync detected aircraft: type={Type}, reg={Reg}, title={Title}",
+                            tele.AircraftType, tele.AircraftRegistration, tele.AircraftTitle);
+                        return ((string? Type, string? Registration, string? Title)?)
+                            (tele.AircraftType, tele.AircraftRegistration, tele.AircraftTitle);
+                    }
+                    Thread.Sleep(50);
+                }
+
+                _logger.LogWarning("ProbeAircraftAsync timed out waiting for telemetry after {Ms}ms",
+                    (int)deadline.TotalMilliseconds);
+                return null;
+            }
+            catch (COMException ex)
+            {
+                _logger.LogInformation(
+                    "ProbeAircraftAsync: SimConnect refused (HRESULT=0x{HResult:X8}) — MSFS likely not running",
+                    ex.HResult);
+                return null;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "ProbeAircraftAsync failed unexpectedly");
+                return null;
+            }
+            finally
+            {
+                try { probe?.Disconnect(); } catch { /* swallow shutdown noise */ }
+                probe?.Dispose();
+            }
+        });
+    }
+
+    /// <summary>
     /// User-initiated re-pair. Tears down any active session, deletes the
     /// stored DPAPI-encrypted token, and resets HasToken so the UI shows
     /// "Nicht gepaart". The user then runs the CLI's pair command (or a

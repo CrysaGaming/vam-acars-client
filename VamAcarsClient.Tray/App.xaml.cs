@@ -427,7 +427,16 @@ public partial class App : Application
     /// </summary>
     private void OnStatePropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
-        if (e.PropertyName == nameof(AcarsClientState.ConnectionStatus))
+        // Trigger tray-tooltip refresh on any of the inputs that
+        // contribute to it (option #11): connection-status flips drive
+        // the prefix; aircraft-type/registration changes drive the
+        // suffix when Connected. We don't filter to ConnectionStatus
+        // alone because the live aircraft display lags the connection
+        // by a few seconds (first heartbeat-response), and we want the
+        // tooltip to refresh once that lands.
+        if (e.PropertyName == nameof(AcarsClientState.ConnectionStatus)
+            || e.PropertyName == nameof(AcarsClientState.AircraftType)
+            || e.PropertyName == nameof(AcarsClientState.AircraftRegistration))
         {
             UpdateTrayIcon();
         }
@@ -594,6 +603,85 @@ public partial class App : Application
     }
 
     /// <summary>
+    /// Drives the "Sim erkennen" button in the PRE-FLIGHT card (option
+    /// #11). Wraps <see cref="AcarsClientService.ProbeAircraftAsync"/>,
+    /// flips <see cref="AcarsClientState.IsProbingSim"/> for the UI's
+    /// in-flight feedback, and pushes the result into the bound
+    /// DetectedAircraft* state fields.
+    ///
+    /// Idempotent and re-entrancy-safe via IsProbingSim — a second call
+    /// while the first is in flight returns immediately. Failures (MSFS
+    /// not running, timeout, COMException) populate StatusMessage with
+    /// a friendly note and clear the Detected* fields so the UI shows
+    /// em-dashes rather than stale data.
+    ///
+    /// Async-void would also be acceptable here (it's invoked from a
+    /// click handler) but Task lets the caller await for tests / future
+    /// composition without restructuring.
+    /// </summary>
+    public async Task ProbeSimAsync()
+    {
+        if (_acarsService is null) return;
+        if (State.IsProbingSim)
+        {
+            _logger?.LogDebug("ProbeSimAsync: already in flight — ignoring concurrent click");
+            return;
+        }
+
+        State.IsProbingSim = true;
+        State.StatusMessage = "Erkenne Flugzeug in MSFS …";
+
+        try
+        {
+            var result = await _acarsService.ProbeAircraftAsync();
+            if (result is { } r)
+            {
+                State.DetectedAircraftType = r.Type;
+                State.DetectedAircraftRegistration = r.Registration;
+                State.DetectedAircraftTitle = r.Title;
+
+                // "UNKN" is the SimTelemetry sentinel for empty values
+                // (see SimTelemetry.AircraftType). Treat it as "no
+                // aircraft loaded" in the status message rather than
+                // pretending we got useful data.
+                if (string.IsNullOrEmpty(r.Type) || r.Type == "UNKN")
+                {
+                    State.StatusMessage = "Sim erreichbar, aber kein Flugzeug geladen.";
+                }
+                else
+                {
+                    State.StatusMessage = $"Flugzeug erkannt: {r.Type} / {r.Registration ?? "—"}";
+                }
+                _logger?.LogInformation(
+                    "Sim probe succeeded: type={Type}, reg={Reg}",
+                    r.Type, r.Registration);
+            }
+            else
+            {
+                // Probe returned null — clear stale data so the UI
+                // doesn't keep showing the previous probe's result.
+                State.DetectedAircraftType = null;
+                State.DetectedAircraftRegistration = null;
+                State.DetectedAircraftTitle = null;
+                State.StatusMessage = "MSFS nicht erreichbar. Sim gestartet?";
+                _logger?.LogInformation("Sim probe returned null (MSFS not running or timeout)");
+            }
+        }
+        catch (Exception ex)
+        {
+            // ProbeAircraftAsync swallows its own exceptions and returns
+            // null in error paths, but defensive catch here in case a
+            // future refactor changes that contract.
+            _logger?.LogWarning(ex, "ProbeSimAsync threw unexpectedly");
+            State.StatusMessage = $"Sim-Probe fehlgeschlagen: {ex.Message}";
+        }
+        finally
+        {
+            State.IsProbingSim = false;
+        }
+    }
+
+    /// <summary>
     /// Apply the current <see cref="AcarsClientState.ConnectionStatus"/>
     /// to the tray icon's tooltip. The icon image itself is fixed for
     /// the lifetime of the app (XAML's <c>IconSource</c> loads
@@ -617,6 +705,32 @@ public partial class App : Application
                 "No tooltip mapping for ConnectionStatus={Status} — leaving previous tooltip",
                 State.ConnectionStatus);
             return;
+        }
+
+        // Option #11: Enrich the tooltip with the live aircraft when
+        // we have one. Format: "VAM ACARS Client — Verbunden · A320 / D-ANNE".
+        // Only when Connected, because Disconnected/Connecting/Error
+        // states either don't have aircraft data yet (Connecting,
+        // Disconnected) or the data is stale-and-misleading (Error).
+        // Truncates to fit Windows' ~63-char tooltip ceiling — anything
+        // longer gets shell-truncated with an ellipsis we can't control.
+        if (State.ConnectionStatus == ConnectionStatus.Connected)
+        {
+            var type = State.AircraftType;
+            var reg = State.AircraftRegistration;
+            if (!string.IsNullOrWhiteSpace(type))
+            {
+                var aircraftSuffix = string.IsNullOrWhiteSpace(reg)
+                    ? type
+                    : $"{type} / {reg}";
+
+                var enriched = $"{tooltip} · {aircraftSuffix}";
+                // Cap at 63 chars (the Win32 NOTIFYICONDATA.szTip limit
+                // is 64 incl. null-terminator). Trim with single-char
+                // ellipsis rather than three dots so we don't lose
+                // additional characters of the aircraft display.
+                tooltip = enriched.Length > 63 ? enriched[..62] + "…" : enriched;
+            }
         }
 
         // ToolTipText is a WPF DependencyProperty on TaskbarIcon; the

@@ -491,6 +491,122 @@
                                 </Style>
                             </TextBlock.Style>
                         </TextBlock>
+
+                        <!--
+                            Sim-probe sub-section (option #11). Reads
+                            the currently loaded aircraft from MSFS via
+                            a one-shot SimConnect query, without starting
+                            the heartbeat session. Lets the pilot verify
+                            "yes, MSFS has my A320 loaded" before pressing
+                            Verbinden — closes a real gap where wrong-
+                            aircraft mismatches only became visible after
+                            heartbeats started flowing.
+
+                            Layout: separator + button + 2 read-only rows
+                            (Aircraft / Registration). Display rows mirror
+                            the FLUG-KONTEXT readouts visually but bind
+                            to DetectedAircraft* (raw SimConnect) rather
+                            than AircraftType / Registration (server-
+                            resolved). Empty/null values fall back to
+                            em-dash via TargetNullValue.
+                        -->
+                        <Border BorderBrush="{StaticResource BorderMuted}"
+                                BorderThickness="0,1,0,0"
+                                Margin="0,12,0,0"
+                                Padding="0,12,0,0">
+                            <StackPanel>
+                                <Button x:Name="ProbeSimButton"
+                                        Click="OnProbeSimClick"
+                                        HorizontalAlignment="Left"
+                                        Padding="14,6"
+                                        Background="{StaticResource BgSecondary}"
+                                        Foreground="{StaticResource TextPrimary}"
+                                        FontSize="12"
+                                        BorderThickness="1"
+                                        BorderBrush="{StaticResource BorderMuted}"
+                                        Cursor="Hand"
+                                        ToolTip="Liest Flugzeugtyp + Registration aus MSFS via SimConnect (ohne Heartbeats zu starten).">
+                                    <Button.Template>
+                                        <ControlTemplate TargetType="Button">
+                                            <Border Background="{TemplateBinding Background}"
+                                                    BorderBrush="{TemplateBinding BorderBrush}"
+                                                    BorderThickness="{TemplateBinding BorderThickness}"
+                                                    CornerRadius="4"
+                                                    Padding="{TemplateBinding Padding}">
+                                                <ContentPresenter HorizontalAlignment="Center"
+                                                                  VerticalAlignment="Center"
+                                                                  TextElement.Foreground="{TemplateBinding Foreground}" />
+                                            </Border>
+                                        </ControlTemplate>
+                                    </Button.Template>
+                                    <Button.Style>
+                                        <Style TargetType="Button">
+                                            <Style.Triggers>
+                                                <!--
+                                                    Disable while a probe is in
+                                                    flight to prevent stacking
+                                                    concurrent SimConnect
+                                                    handshakes. The label flip
+                                                    lives on the inner TextBlock
+                                                    (same pattern as the
+                                                    "Auf Updates prüfen" button).
+                                                -->
+                                                <DataTrigger Binding="{Binding IsProbingSim}" Value="True">
+                                                    <Setter Property="IsEnabled" Value="False" />
+                                                    <Setter Property="Opacity" Value="0.7" />
+                                                </DataTrigger>
+                                                <Trigger Property="IsMouseOver" Value="True">
+                                                    <Setter Property="Background" Value="{StaticResource BgPrimary}" />
+                                                </Trigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </Button.Style>
+                                    <TextBlock>
+                                        <TextBlock.Style>
+                                            <Style TargetType="TextBlock">
+                                                <Setter Property="Text" Value="Sim erkennen" />
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding IsProbingSim}" Value="True">
+                                                        <Setter Property="Text" Value="Erkenne…" />
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </TextBlock.Style>
+                                    </TextBlock>
+                                </Button>
+
+                                <!--
+                                    Detected-aircraft display rows.
+                                    Mirrors the FLUG-KONTEXT readout
+                                    layout (label left, value right,
+                                    em-dash on null) so users get a
+                                    consistent visual rhythm when their
+                                    eye scans both cards.
+                                -->
+                                <Grid Margin="0,12,0,0">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                    </Grid.RowDefinitions>
+
+                                    <TextBlock Grid.Row="0" Grid.Column="0"
+                                               Text="Erkanntes Flugzeug" Style="{StaticResource FieldLabel}" />
+                                    <TextBlock Grid.Row="0" Grid.Column="1"
+                                               Text="{Binding DetectedAircraftType, FallbackValue='—', TargetNullValue='—'}"
+                                               Style="{StaticResource FieldValue}" />
+
+                                    <TextBlock Grid.Row="1" Grid.Column="0" Margin="0,6,0,0"
+                                               Text="Registration" Style="{StaticResource FieldLabel}" />
+                                    <TextBlock Grid.Row="1" Grid.Column="1" Margin="0,6,0,0"
+                                               Text="{Binding DetectedAircraftRegistration, FallbackValue='—', TargetNullValue='—'}"
+                                               Style="{StaticResource FieldValue}" />
+                                </Grid>
+                            </StackPanel>
+                        </Border>
                     </StackPanel>
                 </Border>
 

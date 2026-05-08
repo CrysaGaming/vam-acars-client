@@ -398,6 +398,75 @@ public class AcarsClientState : INotifyPropertyChanged
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(PreflightComplete)));
     }
 
+    // ─── Aircraft auto-detection (option #11) ────────────────────────
+    //
+    // Pre-connect peek at what MSFS has loaded right now. Populated by
+    // <see cref="VamAcarsClient.Tray.App.ProbeSimAsync"/> via the service's
+    // ProbeAircraftAsync method. Distinct from <see cref="AircraftType"/>
+    // / <see cref="AircraftRegistration"/> — those are the SERVER-RESOLVED
+    // values from the heartbeat-response, only available after Verbinden.
+    // Detected* are the RAW SimConnect values, available before Verbinden.
+    //
+    // Why two separate field-pairs rather than reusing AircraftType /
+    // Registration: the displayed flow is different. Pre-connect: "this is
+    // what's in your sim right now, click verbinden to file it." Post-
+    // connect: "this is what the server resolved + is committing to your
+    // PIREP." Conflating them would make the UI lie about which value
+    // it's showing — and would force the post-connect view to overwrite
+    // the pre-connect snapshot, throwing away useful diagnostic info if
+    // server resolution differs from what SimConnect reported.
+
+    private string? _detectedAircraftType;
+    /// <summary>
+    /// Raw ATC MODEL from the most recent SimConnect probe — the type
+    /// designator MSFS reports for the currently loaded aircraft. May
+    /// be "UNKN" if the user hasn't loaded an aircraft, null if the
+    /// probe has never run successfully.
+    /// </summary>
+    public string? DetectedAircraftType
+    {
+        get => _detectedAircraftType;
+        set => SetField(ref _detectedAircraftType, value);
+    }
+
+    private string? _detectedAircraftRegistration;
+    /// <summary>
+    /// Raw ATC ID from the most recent SimConnect probe — the tail
+    /// number set on the loaded aircraft. May be "UNKN" for free-flight
+    /// users without a registration set, null pre-probe.
+    /// </summary>
+    public string? DetectedAircraftRegistration
+    {
+        get => _detectedAircraftRegistration;
+        set => SetField(ref _detectedAircraftRegistration, value);
+    }
+
+    private string? _detectedAircraftTitle;
+    /// <summary>
+    /// Raw TITLE from the most recent SimConnect probe — the full
+    /// aircraft name from aircraft.cfg (e.g. "Asobo A320neo Lufthansa").
+    /// Currently retained for diagnostics + future tooltip enrichment;
+    /// not displayed in the main UI yet.
+    /// </summary>
+    public string? DetectedAircraftTitle
+    {
+        get => _detectedAircraftTitle;
+        set => SetField(ref _detectedAircraftTitle, value);
+    }
+
+    private bool _isProbingSim;
+    /// <summary>
+    /// True while a <see cref="VamAcarsClient.Tray.App.ProbeSimAsync"/>
+    /// call is in flight. Drives the "Sim erkennen" button's disabled
+    /// state + label-swap so the user gets visible feedback that the
+    /// click registered. Flipped true at probe-start, false in finally.
+    /// </summary>
+    public bool IsProbingSim
+    {
+        get => _isProbingSim;
+        set => SetField(ref _isProbingSim, value);
+    }
+
     // ─── Updates (Velopack) ──────────────────────────────────────────
 
     private string _installedVersion = "dev";

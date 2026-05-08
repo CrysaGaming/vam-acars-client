@@ -359,4 +359,25 @@ public partial class MainWindow : Window
 
         await service.UnpairAsync();
     }
+
+    /// <summary>
+    /// Sim-probe button handler (option #11). Delegates to
+    /// <see cref="App.ProbeSimAsync"/> which owns the SimConnect probe
+    /// + state-mutation + status-message. Async-void is fine here for
+    /// the same reasons as the other click handlers in this file:
+    /// canonical async-void scenario (UI event), upstream errors are
+    /// already logged in the App method, no caller to await.
+    ///
+    /// Re-entrancy is guarded inside ProbeSimAsync via
+    /// <see cref="Models.AcarsClientState.IsProbingSim"/>; the XAML
+    /// disables the button while that flag is set so a fast double-
+    /// click can't queue two concurrent SimConnect handshakes. The
+    /// state-flag belt-and-braces against any timing window where the
+    /// IsEnabled binding hasn't yet propagated.
+    /// </summary>
+    private async void OnProbeSimClick(object sender, RoutedEventArgs e)
+    {
+        var app = (App)Application.Current;
+        await app.ProbeSimAsync();
+    }
 }
