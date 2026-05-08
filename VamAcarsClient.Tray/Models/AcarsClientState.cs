@@ -160,6 +160,27 @@ public class AcarsClientState : INotifyPropertyChanged
         set => SetField(ref _heartbeatsQueued, value);
     }
 
+    // ─── User preferences ────────────────────────────────────────────
+
+    private bool _autoStartEnabled;
+    /// <summary>
+    /// Mirrors the HKCU\…\Run registration for "start with Windows".
+    /// Set once at <see cref="App.OnStartup"/> from the live registry
+    /// state, and rewritten by <see cref="App.SetAutoStart"/> after
+    /// every successful toggle so the bound checkbox stays honest.
+    ///
+    /// Bound OneWay from the MainWindow's Auto-Start checkbox — the
+    /// user's click triggers <see cref="App.SetAutoStart"/> directly
+    /// via the click handler, NOT through the binding setter. That
+    /// keeps registry IO out of the property setter and makes the
+    /// success / failure path explicit.
+    /// </summary>
+    public bool AutoStartEnabled
+    {
+        get => _autoStartEnabled;
+        set => SetField(ref _autoStartEnabled, value);
+    }
+
     // ─── INotifyPropertyChanged plumbing ─────────────────────────────
 
     public event PropertyChangedEventHandler? PropertyChanged;

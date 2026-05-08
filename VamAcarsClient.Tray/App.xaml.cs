@@ -28,7 +28,6 @@ namespace VamAcarsClient.Tray;
 ///   Shutdown(), which fires OnExit.
 ///
 /// What this file does NOT do (yet, deferred to a later session):
-///   - Auto-start with Windows (registry HKCU\…\Run integration).
 ///   - Show pairing UI inside the window. For now the user pairs via
 ///     the Cli in Mode 1; the tray-app reads the same TokenStore.
 /// </summary>
@@ -88,6 +87,16 @@ public partial class App : Application
     /// null.
     /// </summary>
     public FlightContext? LastFlightContext { get; private set; }
+
+    /// <summary>
+    /// Auto-start-with-Windows toggle service. Owns the
+    /// HKCU\…\Run registry value for <see cref="VamAcarsClientTray"/>.
+    /// Mutated via <see cref="SetAutoStart"/> from the MainWindow
+    /// checkbox click; probed once at startup so
+    /// <see cref="AcarsClientState.AutoStartEnabled"/> reflects the
+    /// real registry state on the bound UI.
+    /// </summary>
+    private AutoStartService? _autoStartService;
 
     /// <summary>
     /// Heartbeat-lifecycle owner. Created once in OnStartup, reused
@@ -259,6 +268,27 @@ public partial class App : Application
             LastFlightContext = null;
         }
 
+        // Auto-start-with-Windows status: probe the registry once at
+        // startup so the bound MainWindow checkbox shows the real
+        // current state (and survives the user manually editing
+        // HKCU\…\Run via regedit or third-party tools between
+        // sessions). IsEnabled() is itself catch-all-and-return-false,
+        // so this won't throw, but the outer try/catch belts-and-
+        // braces against future implementation drift.
+        _autoStartService = new AutoStartService();
+        try
+        {
+            State.AutoStartEnabled = _autoStartService.IsEnabled();
+            _logger.LogInformation(
+                "Auto-start status at launch: {Enabled}",
+                State.AutoStartEnabled ? "enabled" : "disabled");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "AutoStartService probe failed during startup");
+            State.AutoStartEnabled = false;
+        }
+
         // ─── HttpClient + AcarsClientService ──────────────────────────
         // Single HttpClient for the process. AcarsClientService borrows
         // it (doesn't own it) so we can recycle Start/Stop without
@@ -370,6 +400,51 @@ public partial class App : Application
         catch (Exception ex)
         {
             _logger?.LogWarning(ex, "FlightContextStore save failed");
+        }
+    }
+
+    /// <summary>
+    /// Toggle the "start with Windows" registration. Driven by the
+    /// MainWindow's checkbox click handler, which passes the new
+    /// desired state. On success we update <see cref="State"/>'s
+    /// mirror so the bound checkbox stays in sync; on failure we
+    /// re-read the registry and write back the actual truth, so the
+    /// UI never drifts from the system state (e.g. if a write failed
+    /// halfway and we don't actually know what's there).
+    ///
+    /// Errors are logged and swallowed so the user can keep using
+    /// the app — the failure mode is "checkbox flips back to its
+    /// previous position", which is the right visual feedback for
+    /// "your toggle didn't take effect".
+    /// </summary>
+    public void SetAutoStart(bool enabled)
+    {
+        if (_autoStartService is null) return;
+
+        try
+        {
+            if (enabled)
+            {
+                _autoStartService.Enable();
+            }
+            else
+            {
+                _autoStartService.Disable();
+            }
+            State.AutoStartEnabled = enabled;
+            _logger?.LogInformation(
+                "Auto-start {Status} by user",
+                enabled ? "enabled" : "disabled");
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogWarning(ex,
+                "Failed to toggle auto-start to {Desired} — re-reading registry to re-sync UI",
+                enabled);
+            // Belts-and-braces: re-read so the bound checkbox flips
+            // back to whatever the registry actually says, even if
+            // the write partially succeeded.
+            State.AutoStartEnabled = _autoStartService.IsEnabled();
         }
     }
 

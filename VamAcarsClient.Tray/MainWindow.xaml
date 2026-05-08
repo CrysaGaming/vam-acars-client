@@ -77,6 +77,24 @@
         </Style>
 
         <!--
+            CheckBox style for the preferences card. WPF's default
+            checkbox renders the indicator with system-aero greys
+            that clash with the dark theme; we restyle minimally
+            (Foreground, indicator brushes) without re-templating
+            so we keep native focus/disabled states. Margin gives
+            the label a tiny bit of breathing room from the box.
+        -->
+        <Style x:Key="PrefCheckBox" TargetType="CheckBox">
+            <Setter Property="Foreground" Value="{StaticResource TextPrimary}" />
+            <Setter Property="Background" Value="{StaticResource BgPrimary}" />
+            <Setter Property="BorderBrush" Value="{StaticResource BorderMuted}" />
+            <Setter Property="FontSize" Value="13" />
+            <Setter Property="VerticalContentAlignment" Value="Center" />
+            <Setter Property="Padding" Value="8,0,0,0" />
+            <Setter Property="Cursor" Value="Hand" />
+        </Style>
+
+        <!--
             Form-input style for the callsign / dep / arr boxes. Dark
             theme, monospaced font (so ICAO codes line up visually),
             disables itself while a session is running so the user
@@ -416,6 +434,35 @@
                             <TextBlock Grid.Row="1" Grid.Column="2" HorizontalAlignment="Center"
                                        Text="queued" Style="{StaticResource FieldLabel}" />
                         </Grid>
+                    </StackPanel>
+                </Border>
+
+                <!--
+                    Preferences card (M4 Phase 3). Currently exposes
+                    just the auto-start-with-Windows toggle, but kept
+                    as a generic "Einstellungen" container so future
+                    user-prefs (notification opt-in, sim path
+                    overrides, etc.) drop in without re-architecting.
+
+                    The checkbox uses OneWay binding to the View-
+                    Model so external changes (registry edited by
+                    hand, SetAutoStart's failure-path re-sync)
+                    refresh the visual, but the user's click is the
+                    only path that mutates the registry — handled
+                    explicitly in code-behind via OnAutoStartClick.
+                    TwoWay would have leaked registry IO into the
+                    binding setter and made the success/failure
+                    handling harder to reason about.
+                -->
+                <Border Style="{StaticResource CardBorder}">
+                    <StackPanel>
+                        <TextBlock Text="EINSTELLUNGEN" Style="{StaticResource SectionLabel}" />
+                        <CheckBox x:Name="AutoStartCheck"
+                                  Content="Mit Windows starten"
+                                  Style="{StaticResource PrefCheckBox}"
+                                  IsChecked="{Binding AutoStartEnabled, Mode=OneWay}"
+                                  Click="OnAutoStartClick"
+                                  ToolTip="Startet den VAM ACARS Client automatisch beim Windows-Login (HKCU\…\Run, kein Admin nötig)." />
                     </StackPanel>
                 </Border>
 

@@ -145,4 +145,26 @@ public partial class MainWindow : Window
             ConnectButton.IsEnabled = true;
         }
     }
+
+    /// <summary>
+    /// Auto-start checkbox handler (M4 Phase 3). Reads the post-toggle
+    /// IsChecked state and delegates to <see cref="App.SetAutoStart"/>,
+    /// which owns the actual registry mutation + state-syncing.
+    ///
+    /// Click (not Checked / Unchecked) is intentional: those events
+    /// also fire when the OneWay binding propagates a state change
+    /// from outside the UI (registry hand-edited, App.OnStartup probe),
+    /// which would loop an unintended Enable/Disable through the
+    /// service. Click only fires on actual user gestures, breaking
+    /// the loop cleanly.
+    /// </summary>
+    private void OnAutoStartClick(object sender, RoutedEventArgs e)
+    {
+        var app = (App)Application.Current;
+        // CheckBox.IsChecked is bool? — null is the indeterminate
+        // tri-state, which we never use here. The == true comparison
+        // collapses null to false, matching our ON/OFF semantics.
+        var enabled = AutoStartCheck.IsChecked == true;
+        app.SetAutoStart(enabled);
+    }
 }
