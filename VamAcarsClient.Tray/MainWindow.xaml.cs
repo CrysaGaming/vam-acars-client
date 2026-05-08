@@ -180,11 +180,45 @@ public partial class MainWindow : Window
     /// The XAML binds <c>IsEnabled</c> to
     /// <see cref="Models.AcarsClientState.UpdateDownloaded"/>, so
     /// this handler will never fire before the nupkg is actually
-    /// staged. No additional gating needed here.
+    /// staged. No additional gating needed here for the
+    /// download-readiness side.
+    ///
+    /// M5 Phase 3 connect-gating: if heartbeats are currently
+    /// flowing, prompt the user for confirmation before tearing
+    /// the session down. App.ApplyUpdate stops the service either
+    /// way (necessary for clean Velopack apply), but the user
+    /// might have just lined up an approach into EDDS at FL280
+    /// and not realised an update was staged — a one-tap "are
+    /// you sure" gate prevents accidentally bricking a 90-min
+    /// flight. Default-No so a stray Enter-press doesn't dismiss
+    /// the dialog into proceeding.
     /// </summary>
     private void OnApplyUpdateClick(object sender, RoutedEventArgs e)
     {
         var app = (App)Application.Current;
+
+        // Guard rail: warn if heartbeats are flowing. Connecting
+        // is treated the same as Connected — even a partial session
+        // might already have committed flight-state on the server
+        // that the user wouldn't want to abandon mid-handshake.
+        var status = app.State.ConnectionStatus;
+        if (status == Models.ConnectionStatus.Connected ||
+            status == Models.ConnectionStatus.Connecting)
+        {
+            var result = MessageBox.Show(
+                this,
+                "Die Verbindung zum VAM-Server ist aktuell aktiv. " +
+                "Beim Installieren des Updates wird die Sitzung beendet " +
+                "und die App neu gestartet.\n\n" +
+                "Trotzdem fortfahren?",
+                "Update installieren?",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Warning,
+                MessageBoxResult.No);
+
+            if (result != MessageBoxResult.Yes) return;
+        }
+
         app.ApplyUpdate();
     }
 
