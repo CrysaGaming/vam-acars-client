@@ -1,3 +1,4 @@
+using System.Media;
 using System.Net.Http;
 using System.Runtime.InteropServices;
 using System.Threading;
@@ -294,6 +295,17 @@ public sealed class AcarsClientService : IDisposable
                 _state.PhaseEnteredAt = entered;
             }
 
+            // Audio cue on phase change (option #5). Server flips
+            // PhaseChanged only on the heartbeat that detected the
+            // transition, so this fires exactly once per phase
+            // entrance — never on steady-state heartbeats. Gated on
+            // AudioCueEnabled so the default-off install is silent
+            // until the pilot opts in via EINSTELLUNGEN.
+            if (response.PhaseChanged && _state.AudioCueEnabled)
+            {
+                PlayPhaseSound(response.CurrentPhase);
+            }
+
             // Display the server-resolved aircraft identity (M3.8.1).
             // Server runs the M3.8 3-tier resolver and echoes the
             // result in the heartbeat response, mirroring the phase
@@ -458,5 +470,45 @@ public sealed class AcarsClientService : IDisposable
         _pollCts?.Cancel();
         _pollCts?.Dispose();
         _sim?.Dispose();
+    }
+
+    /// <summary>
+    /// Map a phase name to its SystemSound and play it (option #5).
+    /// Three phases are wired up — the rest of the state machine
+    /// (Taxi, Climb, Cruise, Descent, Approach, BlockOff, BlockOn)
+    /// stays silent because hitting a chime on every transition would
+    /// be irritating during a normal flight. We picked the three that
+    /// most pilots want sonic confirmation of: pushback (engines
+    /// running, brakes off, flight has started), takeoff (wheels up),
+    /// and Landed (touchdown — the "you made it" moment).
+    ///
+    /// SystemSounds.Asterisk / Beep / Exclamation are guaranteed to
+    /// be present on every Windows install (mapped to the user's
+    /// system sound scheme via the standard system-sound entries),
+    /// so we don't need to ship WAV files. Trade-off: pilots can't
+    /// pick custom sounds without editing the OS sound scheme. That's
+    /// acceptable for v1; a future enhancement can ship per-phase WAVs
+    /// in the install package.
+    ///
+    /// SystemSounds.X.Play() is non-blocking — the call returns
+    /// immediately and the sound starts asynchronously. Safe to invoke
+    /// from the UI thread inside MarshalToUi.
+    /// </summary>
+    private static void PlayPhaseSound(string? phase)
+    {
+        if (string.IsNullOrEmpty(phase)) return;
+        switch (phase)
+        {
+            case "Pushback":
+                SystemSounds.Asterisk.Play();
+                break;
+            case "Takeoff":
+                SystemSounds.Beep.Play();
+                break;
+            case "Landed":
+            case "Touchdown":
+                SystemSounds.Exclamation.Play();
+                break;
+        }
     }
 }

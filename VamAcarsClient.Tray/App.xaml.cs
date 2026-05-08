@@ -79,6 +79,16 @@ public partial class App : Application
     private FlightContextStore? _flightContextStore;
 
     /// <summary>
+    /// Persistence for user preferences (audio cues, future toggles).
+    /// Loaded once at startup; <see cref="SetAudioCueEnabled"/> rewrites
+    /// it whenever the user toggles a preference. Always non-null after
+    /// OnStartup; the Load() returns defaults on missing-file rather
+    /// than null, so the field is meaningful from the moment construction
+    /// completes.
+    /// </summary>
+    private PreferencesStore? _preferencesStore;
+
+    /// <summary>
     /// The flight context loaded from disk at startup, or null if no
     /// previous context exists (first launch) or the saved file
     /// couldn't be read. <see cref="MainWindow"/> reads this in its
@@ -301,6 +311,17 @@ public partial class App : Application
             State.AutoStartEnabled = false;
         }
 
+        // ─── Preferences (option #5) ───────────────────────────────────
+        // Load once at startup — defaults to AudioCueEnabled=false on
+        // missing-file (first launch) or any IO/JSON error. Bound
+        // MainWindow checkbox flips through SetAudioCueEnabled below.
+        _preferencesStore = new PreferencesStore(Config);
+        var prefs = _preferencesStore.Load();
+        State.AudioCueEnabled = prefs.AudioCueEnabled;
+        _logger.LogInformation(
+            "Preferences loaded: AudioCueEnabled={Enabled}",
+            State.AudioCueEnabled);
+
         // ─── Velopack updater (M5) ─────────────────────────────────────
         // Construct after AutoStart so the update-check fires while the
         // rest of OnStartup is still running. The check is async + non-
@@ -482,6 +503,36 @@ public partial class App : Application
             // back to whatever the registry actually says, even if
             // the write partially succeeded.
             State.AutoStartEnabled = _autoStartService.IsEnabled();
+        }
+    }
+
+    /// <summary>
+    /// Toggle the audio-cue-on-phase-transition preference. Same
+    /// pattern as <see cref="SetAutoStart"/>: update the in-memory
+    /// state mirror, persist to disk, swallow IO errors so the user
+    /// can keep working. Called from MainWindow's checkbox click.
+    ///
+    /// Disk failure mode: the in-memory toggle still flips (bound
+    /// checkbox stays in sync with what the user just clicked) but
+    /// the on-disk file is stale, so a restart re-loads the old
+    /// value. Acceptable trade — better than reverting the checkbox
+    /// after a click landed.
+    /// </summary>
+    public void SetAudioCueEnabled(bool enabled)
+    {
+        State.AudioCueEnabled = enabled;
+        if (_preferencesStore is null) return;
+
+        try
+        {
+            _preferencesStore.Save(new Preferences { AudioCueEnabled = enabled });
+            _logger?.LogInformation(
+                "Audio cue {Status} by user",
+                enabled ? "enabled" : "disabled");
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogWarning(ex, "PreferencesStore save failed");
         }
     }
 

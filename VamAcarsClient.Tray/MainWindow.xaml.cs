@@ -218,6 +218,22 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
+    /// Audio-cue checkbox click handler (option #5). Mirrors
+    /// <see cref="OnAutoStartClick"/>'s shape exactly: read the
+    /// post-click IsChecked, delegate to App.SetAudioCueEnabled
+    /// which owns the in-memory state update + JSON-file persistence.
+    /// Click (not Checked / Unchecked) for the same loop-breaking
+    /// reason — propagated OneWay binding changes shouldn't echo
+    /// back through the persistence path.
+    /// </summary>
+    private void OnAudioCueClick(object sender, RoutedEventArgs e)
+    {
+        var app = (App)Application.Current;
+        var enabled = AudioCueCheck.IsChecked == true;
+        app.SetAudioCueEnabled(enabled);
+    }
+
+    /// <summary>
     /// Update-installieren button handler (M5). Delegates to
     /// <see cref="App.ApplyUpdate"/>, which stops the heartbeat
     /// service and then hands off to Velopack's

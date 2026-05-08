@@ -474,6 +474,21 @@
                                   ToolTip="Startet den VAM ACARS Client automatisch beim Windows-Login (HKCU\…\Run, kein Admin nötig)." />
 
                         <!--
+                            Audio cue toggle (option #5). OneWay binding +
+                            explicit click handler — same pattern as
+                            AutoStartCheck above; the click handler routes
+                            through App.SetAudioCueEnabled which persists
+                            the choice via PreferencesStore. Default off
+                            on a fresh install (silent until pilot opts in).
+                        -->
+                        <CheckBox x:Name="AudioCueCheck"
+                                  Content="Audio-Cue bei Phasenwechsel"
+                                  Style="{StaticResource PrefCheckBox}"
+                                  IsChecked="{Binding AudioCueEnabled, Mode=OneWay}"
+                                  Click="OnAudioCueClick"
+                                  ToolTip="Spielt einen Windows-Systemton bei Pushback, Takeoff und Touchdown." />
+
+                        <!--
                             Version + update controls (M5). Layout:
                             permanent "Version: x.y.z" line, then a
                             conditional block (Visibility bound to

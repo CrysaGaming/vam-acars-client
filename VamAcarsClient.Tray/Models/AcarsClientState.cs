@@ -241,6 +241,27 @@ public class AcarsClientState : INotifyPropertyChanged
         set => SetField(ref _autoStartEnabled, value);
     }
 
+    private bool _audioCueEnabled;
+    /// <summary>
+    /// User preference: play a SystemSound on phase transitions to
+    /// Pushback / Takeoff / Landed. Persisted by
+    /// <see cref="VamAcarsClient.Core.PreferencesStore"/>; loaded once
+    /// at <see cref="VamAcarsClient.Tray.App.OnStartup"/> and rewritten
+    /// via <see cref="VamAcarsClient.Tray.App.SetAudioCueEnabled"/>
+    /// whenever the user toggles the EINSTELLUNGEN checkbox.
+    ///
+    /// Bound OneWay from the MainWindow's checkbox just like
+    /// <see cref="AutoStartEnabled"/> — the binding-setter never
+    /// fires from the user click (Click-handler routes through
+    /// SetAudioCueEnabled), so registry/disk IO stays out of the
+    /// hot setter path.
+    /// </summary>
+    public bool AudioCueEnabled
+    {
+        get => _audioCueEnabled;
+        set => SetField(ref _audioCueEnabled, value);
+    }
+
     // ─── Updates (Velopack) ──────────────────────────────────────────
 
     private string _installedVersion = "dev";

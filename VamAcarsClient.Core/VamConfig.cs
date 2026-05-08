@@ -60,6 +60,15 @@ public sealed class VamConfig
         /// rewrites it after every successful Connect, so the user
         /// doesn't have to retype NGN901 / EDDF / EDDM every launch.</summary>
         public string FlightContextFileName { get; init; } = "flight-context.json";
+
+        /// <summary>Filename of the persisted user preferences (audio
+        /// cues, future toggles) inside the local app-data folder.
+        /// JSON, plaintext — these are user-visible toggles, not
+        /// secrets. Loaded once at startup to populate
+        /// <see cref="VamAcarsClient.Tray.Models.AcarsClientState"/>;
+        /// rewritten whenever the user toggles a preference in the
+        /// MainWindow's EINSTELLUNGEN card.</summary>
+        public string PreferencesFileName { get; init; } = "preferences.json";
     }
 
     public sealed class HeartbeatSection
