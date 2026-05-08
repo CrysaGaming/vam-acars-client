@@ -1,3 +1,4 @@
+using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
 
@@ -47,6 +48,53 @@ public enum ConnectionStatus
 /// </summary>
 public class AcarsClientState : INotifyPropertyChanged
 {
+    /// <summary>
+    /// Constructor: seeds the pre-flight checklist with the default
+    /// items (option #10) and wires per-item PropertyChanged forwarding
+    /// so any IsChecked toggle bubbles up as a PreflightComplete change.
+    ///
+    /// Why hook PropertyChanged on each item rather than re-computing
+    /// PreflightComplete inside a setter: the items are POCOs the UI
+    /// mutates directly via two-way binding — there's no setter on the
+    /// State for us to intercept. Subscribing to each item is the only
+    /// way to know when one of them flipped without polling.
+    ///
+    /// We don't subscribe to the collection's CollectionChanged event
+    /// because we don't currently add/remove items at runtime. If a
+    /// future feature lets users customise the list, this constructor
+    /// would need an extra hook to attach/detach the per-item handler
+    /// when items come and go.
+    /// </summary>
+    public AcarsClientState()
+    {
+        PreflightChecklist = new ObservableCollection<PreflightChecklistItem>
+        {
+            // Default item-set. Order = realistic pre-departure flow.
+            // Keys are stable identifiers; labels are user-facing German.
+            new() { Key = "flight_plan", Label = "Flugplan eingegeben (FMC/Route)" },
+            new() { Key = "fuel_loaded", Label = "Treibstoff geladen" },
+            new() { Key = "doors_closed", Label = "Türen geschlossen" },
+            new() { Key = "beacon_on",    Label = "Beacon an" },
+            new() { Key = "pushback_ok",  Label = "Pushback-Freigabe" },
+        };
+
+        foreach (var item in PreflightChecklist)
+        {
+            item.PropertyChanged += OnPreflightItemChanged;
+        }
+    }
+
+    /// <summary>
+    /// Forward per-item IsChecked changes as a PreflightComplete change
+    /// on the parent state. The handler doesn't filter by property name
+    /// because IsChecked is the only mutable property on
+    /// <see cref="PreflightChecklistItem"/> — any change is a tick-flip.
+    /// </summary>
+    private void OnPreflightItemChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        RaisePreflightCompleteChanged();
+    }
+
     private ConnectionStatus _connectionStatus = ConnectionStatus.Disconnected;
     public ConnectionStatus ConnectionStatus
     {
@@ -260,6 +308,94 @@ public class AcarsClientState : INotifyPropertyChanged
     {
         get => _audioCueEnabled;
         set => SetField(ref _audioCueEnabled, value);
+    }
+
+    // ─── Pre-flight checklist (option #10) ───────────────────────────
+    //
+    // Discipline-tool + connect-gate. The user ticks each item off
+    // before clicking Verbinden; the button's IsEnabled is bound to
+    // PreflightComplete (see MainWindow.xaml MultiDataTrigger), so
+    // an incomplete checklist physically blocks the heartbeat-start.
+    //
+    // Per-session, NOT persisted across launches: every fresh app
+    // start (and every Trennen → Verbinden cycle, see ResetPreflight
+    // in AcarsClientService.StopAsync) resets all items to unchecked.
+    // This is the whole point — running through the checklist is the
+    // ritual, not the bookkeeping. Persisting "I always tick these
+    // four before flight" would defeat the gate.
+    //
+    // Items are seeded once in the constructor below. Order matches
+    // a realistic pre-departure flow (plan → fuel → doors → beacon →
+    // pushback-clearance) so reading top-to-bottom mirrors what a
+    // real-world cockpit checklist would say.
+    //
+    // Why ObservableCollection rather than List<>: WPF's ItemsControl
+    // re-templates on collection-change events. We don't currently
+    // mutate the collection at runtime (only the items' IsChecked),
+    // but ObservableCollection is the natural choice and gives a
+    // free upgrade path if a future config-file lets users customize
+    // the list.
+
+    /// <summary>
+    /// The list of pre-flight items the user must check before the
+    /// Verbinden button enables. See the section docstring above for
+    /// design rationale.
+    /// </summary>
+    public ObservableCollection<PreflightChecklistItem> PreflightChecklist { get; }
+
+    /// <summary>
+    /// True iff every item in <see cref="PreflightChecklist"/> is
+    /// currently checked, OR if the list is somehow empty (defensive —
+    /// an empty list shouldn't happen but treating it as "no gate"
+    /// is a saner failure mode than locking the user out of Verbinden
+    /// forever).
+    ///
+    /// Computed property, not a stored field — its source-of-truth is
+    /// the IsChecked bits of the individual items. Re-evaluated lazily
+    /// on read; PropertyChanged is fired explicitly via
+    /// <see cref="RaisePreflightCompleteChanged"/> from the constructor's
+    /// per-item PropertyChanged subscription so WPF re-binds the
+    /// MultiDataTrigger when any item flips.
+    /// </summary>
+    public bool PreflightComplete
+    {
+        get
+        {
+            if (PreflightChecklist.Count == 0) return true;
+            foreach (var item in PreflightChecklist)
+            {
+                if (!item.IsChecked) return false;
+            }
+            return true;
+        }
+    }
+
+    /// <summary>
+    /// Reset every item to unchecked. Called from
+    /// <see cref="VamAcarsClient.Tray.Models.AcarsClientService.StopAsync"/>
+    /// so the next Verbinden requires a fresh tick-through. Also safe
+    /// to call from the UI thread directly if a future "Reset" button
+    /// is added — mutating IsChecked fires PropertyChanged on the item,
+    /// which our subscription forwards as a PreflightComplete change.
+    /// </summary>
+    public void ResetPreflightChecklist()
+    {
+        foreach (var item in PreflightChecklist)
+        {
+            item.IsChecked = false;
+        }
+    }
+
+    /// <summary>
+    /// Pokes WPF to re-evaluate any bindings on
+    /// <see cref="PreflightComplete"/>. Hooked up internally to each
+    /// item's PropertyChanged in the constructor — callers don't need
+    /// to invoke this manually unless they swap the entire collection
+    /// out (which we don't currently do).
+    /// </summary>
+    private void RaisePreflightCompleteChanged()
+    {
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(PreflightComplete)));
     }
 
     // ─── Updates (Velopack) ──────────────────────────────────────────

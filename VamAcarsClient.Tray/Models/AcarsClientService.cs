@@ -266,6 +266,14 @@ public sealed class AcarsClientService : IDisposable
                 s.StatusMessage = "Getrennt.";
             }
             s.HeartbeatsQueued = 0;
+
+            // Pre-flight checklist reset (option #10). Each Trennen →
+            // Verbinden cycle should require a fresh tick-through —
+            // that's the whole point of the gate. We reset on Stop
+            // (rather than at the start of the next Start) so the UI
+            // visibly clears the moment the session ends, not on the
+            // next user click.
+            s.ResetPreflightChecklist();
         });
 
         _logger.LogInformation("ACARS client stopped");

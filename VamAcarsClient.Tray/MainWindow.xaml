@@ -183,6 +183,34 @@
                     <Setter Property="Content" Value="Verbinde…" />
                     <Setter Property="IsEnabled" Value="False" />
                 </DataTrigger>
+                <!--
+                    Pre-flight gate (option #10). Disable Verbinden when
+                    the checklist is incomplete AND we're in a
+                    pre-connection state (Disconnected or Error). We
+                    don't gate Connected — the button at that point is
+                    "Trennen", and we want the user to always be able
+                    to disconnect regardless of checklist state. Two
+                    MultiDataTriggers (one per pre-connection state)
+                    rather than collapsing into a single trigger because
+                    WPF MultiDataTrigger requires all conditions to be
+                    equal-value matches; there's no native OR operator.
+                -->
+                <MultiDataTrigger>
+                    <MultiDataTrigger.Conditions>
+                        <Condition Binding="{Binding PreflightComplete}" Value="False" />
+                        <Condition Binding="{Binding ConnectionStatus}" Value="Disconnected" />
+                    </MultiDataTrigger.Conditions>
+                    <Setter Property="IsEnabled" Value="False" />
+                    <Setter Property="Opacity" Value="0.5" />
+                </MultiDataTrigger>
+                <MultiDataTrigger>
+                    <MultiDataTrigger.Conditions>
+                        <Condition Binding="{Binding PreflightComplete}" Value="False" />
+                        <Condition Binding="{Binding ConnectionStatus}" Value="Error" />
+                    </MultiDataTrigger.Conditions>
+                    <Setter Property="IsEnabled" Value="False" />
+                    <Setter Property="Opacity" Value="0.5" />
+                </MultiDataTrigger>
                 <Trigger Property="IsMouseOver" Value="True">
                     <Setter Property="Opacity" Value="0.85" />
                 </Trigger>
@@ -396,11 +424,87 @@
                 </Border>
 
                 <!--
+                    Pre-flight checklist card (option #10). Discipline-
+                    tool + connect-gate. The user ticks each item before
+                    clicking Verbinden; the PrimaryButton's
+                    MultiDataTrigger blocks the button while the
+                    checklist is incomplete and the connection state is
+                    Disconnected/Error.
+
+                    ItemsControl renders the ObservableCollection from
+                    the State. Each row is a CheckBox with TwoWay binding
+                    on IsChecked — toggling it fires the item's
+                    PropertyChanged, which the State forwards as a
+                    PreflightComplete change, which re-evaluates the
+                    Connect button's IsEnabled trigger. No code-behind
+                    needed for the ticking itself.
+
+                    Per-session reset happens in
+                    AcarsClientService.StopAsync — see ResetPreflight-
+                    Checklist's docstring for rationale.
+                -->
+                <Border Style="{StaticResource CardBorder}">
+                    <StackPanel>
+                        <TextBlock Text="PRE-FLIGHT" Style="{StaticResource SectionLabel}" />
+                        <ItemsControl ItemsSource="{Binding PreflightChecklist}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate DataType="{x:Type models:PreflightChecklistItem}">
+                                    <!--
+                                        TwoWay binding so user clicks
+                                        flow into the POCO's IsChecked
+                                        setter, which fires the
+                                        PropertyChanged that bubbles up.
+                                        Margin gives breathing room
+                                        between rows; PrefCheckBox style
+                                        matches the EINSTELLUNGEN look.
+                                    -->
+                                    <CheckBox Content="{Binding Label}"
+                                              IsChecked="{Binding IsChecked, Mode=TwoWay}"
+                                              Style="{StaticResource PrefCheckBox}"
+                                              Margin="0,4,0,4" />
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+
+                        <!--
+                            Status-hint shown when the user hasn't
+                            ticked everything yet. The hint references
+                            the gate so a confused user can find the
+                            cause of the disabled Verbinden button
+                            without reading the source. Hidden once
+                            PreflightComplete=true so it doesn't shout
+                            redundantly when the gate is open.
+                        -->
+                        <TextBlock Margin="0,8,0,0"
+                                   FontSize="11"
+                                   Foreground="{StaticResource AccentYellow}"
+                                   TextWrapping="Wrap"
+                                   Text="Alle Punkte abhaken um Verbinden freizuschalten.">
+                            <TextBlock.Style>
+                                <Style TargetType="TextBlock">
+                                    <Setter Property="Visibility" Value="Visible" />
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding PreflightComplete}" Value="True">
+                                            <Setter Property="Visibility" Value="Collapsed" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </TextBlock.Style>
+                        </TextBlock>
+                    </StackPanel>
+                </Border>
+
+                <!--
                     Connect/Disconnect button. Style handles the colour
                     + label flip via ConnectionStatus triggers; click
                     handler in code-behind decides Start vs Stop based
                     on the same state. Stretched horizontally so it
                     reads as the primary action of the window.
+
+                    Option #10: IsEnabled is gated on PreflightComplete
+                    when Disconnected/Error. The MultiDataTrigger inside
+                    PrimaryButton's Style handles this — we don't need
+                    a per-instance binding here.
                 -->
                 <Button x:Name="ConnectButton"
                         Style="{StaticResource PrimaryButton}"
