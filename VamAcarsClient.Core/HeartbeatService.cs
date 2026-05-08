@@ -54,6 +54,39 @@ public sealed class HeartbeatService : IDisposable
     private CancellationTokenSource? _cts;
     private Task? _loopTask;
 
+    // ─── Local block-event tracking (option #5) ─────────────────────────
+    //
+    // The server's M3.9 phase detector emits BLOCK_OFF / BLOCK_ON events
+    // server-side from heartbeat phase transitions, and M6 fires the
+    // auto-PIREP helper from those server-side events. That works but
+    // the server-side path uses null payload, so generate-pirep.ts's
+    // server-derived block-to-block (M7 / option #13) is the best it
+    // can do — wall-clock-based, sim-rate-blind.
+    //
+    // Option #5 closes that gap: when the heartbeat response tells us a
+    // phase transition just landed at the server, we mirror the same
+    // detection locally, snapshot fuel + block-off time at PreFlight →
+    // moving transitions, and emit a richer BLOCK_ON event via
+    // /api/acars/event when the server reports the BlockOn transition.
+    //
+    // Race vs the M6 server-bridge: the server-bridge fires from the
+    // SAME heartbeat that returns the response we read here, so it
+    // typically wins by 30–80ms (its tx is already in flight when our
+    // POST hits). The auto-PIREP helper's session-already-closed guard
+    // means our POST quietly no-ops on lost races. The wins come on
+    // network blips / DB lag / heavy server load where the bridge runs
+    // late — our POST fills the gap and provides the rich payload.
+    //
+    // Why track _currentSessionId rather than re-reading from each
+    // response: the server can rotate sessions (stale-cleanup, manual
+    // disconnect/reconnect) and we need to reset the BLOCK_OFF snapshot
+    // when that happens. Without the reset, a fresh flight would inherit
+    // the previous session's block-off time and emit nonsense deltas.
+    private string? _previousPhase;
+    private string? _currentSessionId;
+    private DateTimeOffset? _blockOffAt;
+    private int? _fuelAtBlockOff;
+
     /// <summary>
     /// JSON-options for heartbeat serialization. Critical setting:
     /// DefaultIgnoreCondition.WhenWritingNull — Zod's `.optional()` on
@@ -226,6 +259,16 @@ public sealed class HeartbeatService : IDisposable
                                 body.CurrentPhase, body.PhaseSource, body.SessionId);
                         }
 
+                        // Option #5: track block-events locally for richer
+                        // BLOCK_ON event emission. Mirrors what the server's
+                        // M3.9 phase detector does, but lets us snapshot the
+                        // sim-truth fuel-at-block-off and emit a rich payload
+                        // when BlockOn fires. See _previousPhase docstring
+                        // above for why this lives here rather than server-
+                        // side. Runs unconditionally — TrackBlockEvents is
+                        // a no-op when nothing relevant happened.
+                        TrackBlockEvents(body, hb);
+
                         HeartbeatSent?.Invoke(body);
                     }
                 }
@@ -281,6 +324,213 @@ public sealed class HeartbeatService : IDisposable
                 "Heartbeat rejected by server ({Status}). Body={ErrorBody}. Dropping entry.",
                 status, errorBody);
             HeartbeatFailed?.Invoke($"Heartbeat abgelehnt ({status}): {errorBody}");
+        }
+    }
+
+    /// <summary>
+    /// Local mirror of the server's M3.9 phase-detector for block-event
+    /// purposes (option #5). Updates the per-session tracking fields
+    /// based on the heartbeat response and, on a BlockOn transition,
+    /// fires off a rich BLOCK_ON event to /api/acars/event.
+    ///
+    /// Why pass `lastSentHeartbeat` rather than re-reading telemetry from
+    /// the sim: at the moment the heartbeat-response arrives, the sim's
+    /// LatestTelemetry has likely advanced a tick or two beyond what the
+    /// server processed. The fuelTotalKg the server saw — which it used
+    /// to make the phase-decision being reported back — is in the
+    /// just-sent heartbeat. Using that keeps client and server views of
+    /// "fuel at this transition" consistent.
+    ///
+    /// Idempotent against same-phase repeats: PhaseChanged guards the
+    /// transition logic, so heartbeat #2 reporting `phaseChanged=false,
+    /// currentPhase=Cruise` triggers no work even though we update
+    /// _previousPhase to keep it accurate.
+    /// </summary>
+    private void TrackBlockEvents(HeartbeatResponse body, HeartbeatRequest lastSentHeartbeat)
+    {
+        // Reset on session rotation. The server can rotate sessionIds
+        // when stale-cleanup expires the previous one, or when a
+        // disconnect/reconnect creates a fresh session row. The phase
+        // history doesn't carry across — a new session is a new flight.
+        if (body.SessionId is not null && body.SessionId != _currentSessionId)
+        {
+            _logger.LogDebug(
+                "Session rotated: {OldSessionId} -> {NewSessionId}. Resetting block-event state.",
+                _currentSessionId, body.SessionId);
+            _currentSessionId = body.SessionId;
+            _previousPhase = null;
+            _blockOffAt = null;
+            _fuelAtBlockOff = null;
+        }
+
+        if (!body.PhaseChanged || body.CurrentPhase is null)
+        {
+            // No transition — keep _previousPhase in sync with whatever
+            // the server says so the next transition compares correctly.
+            // (Edge case: the very first heartbeat of a session sets
+            // PhaseChanged=true; defensive update otherwise.)
+            if (body.CurrentPhase is not null)
+            {
+                _previousPhase = body.CurrentPhase;
+            }
+            return;
+        }
+
+        // BLOCK_OFF detection: PreFlight → {Pushback,Taxi,Takeoff}.
+        // The server's M3.9 detector emits BLOCK_OFF on this same
+        // transition; we mirror it locally to capture the fuel snapshot.
+        // Fuel from the just-sent heartbeat is what the server saw; it's
+        // the canonical "fuel at chocks-off". Once captured we don't
+        // overwrite — a later mid-flight push-pull-push would otherwise
+        // reset the snapshot to a worse-than-original value.
+        var movingPhases = new[] { "Pushback", "Taxi", "Takeoff" };
+        if (_previousPhase == "PreFlight"
+            && Array.IndexOf(movingPhases, body.CurrentPhase) >= 0
+            && _blockOffAt is null)
+        {
+            _blockOffAt = DateTimeOffset.UtcNow;
+            _fuelAtBlockOff = lastSentHeartbeat.Engine?.FuelTotalKg;
+            _logger.LogInformation(
+                "Local BLOCK_OFF tracked at {At} (fuel={Fuel}kg).",
+                _blockOffAt, _fuelAtBlockOff);
+        }
+
+        // BLOCK_ON detection: any phase → BlockOn. Fire the event POST.
+        // Done fire-and-forget on a background task so we don't block
+        // the heartbeat-loop; the loop is single-flight on responses
+        // and a network roundtrip here would jam its cadence.
+        if (body.CurrentPhase == "BlockOn" && _currentSessionId is not null)
+        {
+            var sessionId = _currentSessionId;
+            var blockOffAt = _blockOffAt;
+            var fuelAtBlockOff = _fuelAtBlockOff;
+            var fuelAtBlockOn = lastSentHeartbeat.Engine?.FuelTotalKg;
+
+            _ = Task.Run(() => EmitBlockOnEventAsync(
+                sessionId, blockOffAt, fuelAtBlockOff, fuelAtBlockOn));
+        }
+
+        _previousPhase = body.CurrentPhase;
+    }
+
+    /// <summary>
+    /// POST /api/acars/event with a BLOCK_ON event carrying the locally-
+    /// computed totals. Fire-and-forget — caller doesn't await. Failures
+    /// are logged at Warning (non-fatal: the M6 server-bridge has
+    /// already filed the PIREP from the same heartbeat, so a failed
+    /// client POST just means we lost the rich-payload optimization,
+    /// not the PIREP itself).
+    ///
+    /// Uses the same _http + _token as heartbeat sends, so authn and
+    /// base-URL are identical. No retry loop: a single attempt is
+    /// enough for the rich-payload optimization. If it fails, the
+    /// next BLOCK_ON event in this session is unlikely (BlockOn is
+    /// terminal), and the server-bridge already covered the PIREP.
+    /// </summary>
+    private async Task EmitBlockOnEventAsync(
+        string sessionId,
+        DateTimeOffset? blockOffAt,
+        int? fuelAtBlockOff,
+        int? fuelAtBlockOn)
+    {
+        try
+        {
+            var now = DateTimeOffset.UtcNow;
+
+            // totalFlightTimeMin: client-computed block-to-block. Honours
+            // exactly the wall-clock between the local BLOCK_OFF snapshot
+            // and now (BLOCK_ON moment). Same accuracy class as the M7
+            // server-derived block-to-block (#13), but emitted as the
+            // primary client-reported value, so generate-pirep.ts uses
+            // it at tier-1 of the fallback chain rather than tier-2.
+            int? totalFlightTimeMin = null;
+            if (blockOffAt is not null)
+            {
+                var minutes = (int)Math.Round((now - blockOffAt.Value).TotalMinutes);
+                if (minutes > 0)
+                {
+                    totalFlightTimeMin = minutes;
+                }
+            }
+
+            // totalFuelUsedKg: BLOCK_OFF snapshot − current. Negative
+            // values shouldn't happen (refuel mid-flight is rare and not
+            // really a thing in MSFS) but defensive — clamp to 0 rather
+            // than emit nonsense.
+            int? totalFuelUsedKg = null;
+            if (fuelAtBlockOff is not null && fuelAtBlockOn is not null)
+            {
+                var used = fuelAtBlockOff.Value - fuelAtBlockOn.Value;
+                totalFuelUsedKg = used > 0 ? used : 0;
+            }
+
+            // blockTimeMin mirrors totalFlightTimeMin in this v1 — both
+            // represent the chocks-off → chocks-on duration. Future
+            // refinement could split (e.g., totalFlightTimeMin = takeoff
+            // → touchdown excluding taxi), but for now the schema-
+            // documented BlockOnPayload puts both names in scope and
+            // the helper consumes the first that's present.
+            var payload = new Dictionary<string, object?>();
+            if (totalFlightTimeMin is not null) payload["totalFlightTimeMin"] = totalFlightTimeMin;
+            if (totalFuelUsedKg is not null) payload["totalFuelUsedKg"] = totalFuelUsedKg;
+            if (totalFlightTimeMin is not null) payload["blockTimeMin"] = totalFlightTimeMin;
+
+            var eventBody = new
+            {
+                timestamp = now.UtcDateTime.ToString("yyyy-MM-ddTHH:mm:ss.fffffffZ"),
+                sessionId,
+                type = "BLOCK_ON",
+                payload = payload.Count > 0 ? payload : null,
+            };
+
+            using var req = new HttpRequestMessage(HttpMethod.Post, "/api/acars/event")
+            {
+                Content = JsonContent.Create(eventBody, options: JsonOpts),
+            };
+            req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _token);
+
+            // Modest timeout: the request shouldn't take long; if it
+            // does, server-bridge has already won the race anyway.
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            using var response = await _http.SendAsync(req, cts.Token);
+
+            if (response.IsSuccessStatusCode)
+            {
+                _logger.LogInformation(
+                    "BLOCK_ON event posted (sessionId={SessionId}, flightMin={FlightMin}, fuelKg={FuelKg}).",
+                    sessionId, totalFlightTimeMin, totalFuelUsedKg);
+            }
+            else
+            {
+                // 409 from the helper means session-already-closed —
+                // the M6 server-bridge won the race. Logged at Debug
+                // because that's the expected case (~90% of events).
+                // Other status codes warrant attention.
+                var status = (int)response.StatusCode;
+                if (status == 409)
+                {
+                    _logger.LogDebug(
+                        "BLOCK_ON event rejected as session-already-closed (server-bridge won race). sessionId={SessionId}",
+                        sessionId);
+                }
+                else
+                {
+                    string errorBody;
+                    try { errorBody = await response.Content.ReadAsStringAsync(cts.Token); }
+                    catch { errorBody = "<unread>"; }
+                    _logger.LogWarning(
+                        "BLOCK_ON event POST returned {Status}. Body={Body}",
+                        status, errorBody);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            // Network error / timeout / unexpected. Non-fatal: server-
+            // bridge has the PIREP covered from the heartbeat side.
+            _logger.LogWarning(ex,
+                "BLOCK_ON event POST failed for sessionId={SessionId}. Server-bridge fallback applies.",
+                sessionId);
         }
     }
 
