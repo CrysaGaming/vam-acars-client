@@ -1,5 +1,5 @@
-# =============================================================================
-# release.ps1 — VAM ACARS Client release builder
+﻿# =============================================================================
+# release.ps1 -- VAM ACARS Client release builder
 # =============================================================================
 #
 # Builds a Velopack release package from VamAcarsClient.Tray and
@@ -11,7 +11,7 @@
 #   2. dotnet publish the Tray project to ./publish/ in Release mode,
 #      self-contained for win-x64. Velopack ships a copy of the .NET
 #      runtime alongside the app, so users don't need a system-installed
-#      .NET 10 to run this — they download one .exe and double-click.
+#      .NET 10 to run this -- they download one .exe and double-click.
 #   3. vpk pack reads the publish dir and produces:
 #        - releases/VamAcarsClient-win-Setup.exe   (first-time installer)
 #        - releases/VamAcarsClient-{version}-full.nupkg
@@ -25,7 +25,7 @@
 #   - vpk CLI: `dotnet tool install -g vpk` (one-time, global)
 #   - For -Publish: $env:GITHUB_TOKEN set to a PAT with `contents: write`
 #     on CrysaGaming/vam-acars-client. Generate at
-#     https://github.com/settings/tokens — fine-grained or classic both work.
+#     https://github.com/settings/tokens -- fine-grained or classic both work.
 #
 # Examples:
 #   ./release.ps1                 # local pack only, no upload
@@ -55,7 +55,7 @@ param(
 )
 
 # Stop on error; treat warnings as errors. Release builds shouldn't
-# tolerate either — if vpk can't find the publish dir or dotnet returns
+# tolerate either -- if vpk can't find the publish dir or dotnet returns
 # non-zero we want to know immediately, not press through.
 $ErrorActionPreference = "Stop"
 
@@ -70,12 +70,12 @@ $PackTitle      = "VAM ACARS Client"
 $RepoUrl        = "https://github.com/CrysaGaming/vam-acars-client"
 
 if (-not (Test-Path $TrayCsproj)) {
-    throw "Tray csproj not found at $TrayCsproj — is this script in the repo root?"
+    throw "Tray csproj not found at $TrayCsproj -- is this script in the repo root?"
 }
 
 # ---- determine version -----------------------------------------------------
 # When -Version isn't passed, read <Version> from the csproj. We use a
-# simple regex rather than [xml]…SelectSingleNode so this script doesn't
+# simple regex rather than [xml]...SelectSingleNode so this script doesn't
 # care about XML namespace shenanigans.
 if ([string]::IsNullOrWhiteSpace($Version)) {
     $csprojContent = Get-Content $TrayCsproj -Raw
@@ -95,33 +95,51 @@ if ($Version -notmatch '^\d+\.\d+\.\d+(-[\w.-]+)?$') {
 # ---- preflight -------------------------------------------------------------
 Write-Host ""
 Write-Host "============================================================"
-Write-Host " VAM ACARS Client — packaging release v$Version"
+Write-Host " VAM ACARS Client -- packaging release v$Version"
 Write-Host "============================================================"
 Write-Host ""
 
 # Verify vpk CLI is available. Without it, the pack step would fail with
 # a less-helpful "command not recognised" message, so check up-front.
-$vpk = Get-Command vpk -ErrorAction SilentlyContinue
-if (-not $vpk) {
-    throw "vpk CLI not found on PATH. Install with: dotnet tool install -g vpk"
+# `dotnet tool install -g` writes to ~/.dotnet/tools, which is supposed
+# to be on PATH after install but in practice often isn't until the
+# user re-opens their shell. We resolve the binary to an absolute path
+# and store it in $VpkExe; every later invocation uses & $VpkExe rather
+# than relying on PATH lookup, which sidesteps stale-PATH issues
+# entirely (Get-Command after $env:Path mutation didn't reliably
+# pick up the change in some shells).
+$VpkExe = $null
+$cmd = Get-Command vpk -ErrorAction SilentlyContinue
+if ($cmd) {
+    $VpkExe = $cmd.Source
+} else {
+    $vpkFallback = Join-Path $env:USERPROFILE ".dotnet\tools\vpk.exe"
+    if (Test-Path $vpkFallback) {
+        $VpkExe = $vpkFallback
+    }
 }
-Write-Host "vpk: $($vpk.Source)"
+if (-not $VpkExe) {
+    throw "vpk CLI not found on PATH or in ~/.dotnet/tools. Install with: dotnet tool install -g vpk"
+}
+Write-Host "vpk: $VpkExe"
 Write-Host "Repo: $RepoUrl"
 Write-Host ""
 
 # Kill any running tray. dotnet publish will fail with a file lock on
-# VamAcarsClientTray.dll otherwise. taskkill returns non-zero when the
-# process isn't running, which we don't want to abort on — wrap and
-# swallow. -ErrorAction SilentlyContinue won't help here because
-# taskkill writes the "not found" message to stdout, not stderr.
-Write-Host "Stopping any running tray app…"
-& taskkill -F -IM $MainExe 2>$null
-$LASTEXITCODE = 0  # reset; we don't care if it wasn't running
+# VamAcarsClientTray.dll otherwise. Stop-Process is PowerShell-native
+# (no PATH dependency on taskkill.exe), -Force skips the friendly
+# close-window attempt that GUI apps don't honour anyway, and
+# -ErrorAction SilentlyContinue swallows the not-found error when
+# the process isn't running. The trailing $null discard makes sure
+# we don't accumulate a "no process found" error on $Error.
+Write-Host "Stopping any running tray app..."
+Get-Process -Name "VamAcarsClientTray" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+$LASTEXITCODE = 0  # cmdlets don't set this but defensive reset
 
 # ---- publish ---------------------------------------------------------------
 # Self-contained: include the .NET 10 runtime in the package so users
 # don't need a separate runtime install. PublishSingleFile=false because
-# Velopack handles its own bundling — single-file publish would actually
+# Velopack handles its own bundling -- single-file publish would actually
 # confuse vpk.
 #
 # Clean publish dir first so we don't accumulate stale files from
@@ -131,7 +149,7 @@ if (Test-Path $PublishDir) {
     Remove-Item $PublishDir -Recurse -Force
 }
 
-Write-Host "Publishing $TrayCsproj to $PublishDir…"
+Write-Host "Publishing $TrayCsproj to $PublishDir..."
 & dotnet publish $TrayCsproj `
     -c Release `
     -r win-x64 `
@@ -156,7 +174,7 @@ if (-not (Test-Path $ReleasesDir)) {
 }
 
 if ($Publish) {
-    Write-Host "Pulling previous release for delta computation…"
+    Write-Host "Pulling previous release for delta computation..."
     # Token isn't strictly required for public-repo reads but supplying
     # it avoids the 60-req/hour anonymous rate limit; we already need
     # the token for upload anyway.
@@ -167,14 +185,14 @@ if ($Publish) {
     if ($env:GITHUB_TOKEN) {
         $downloadArgs += @("--token", $env:GITHUB_TOKEN)
     }
-    & vpk @downloadArgs 2>&1 | Tee-Object -Variable downloadOut | Out-Host
+    & $VpkExe @downloadArgs 2>&1 | Tee-Object -Variable downloadOut | Out-Host
     # download returns non-zero if there's literally no previous release.
     # That's fine for a first-run; we just won't have a delta. Reset.
     $LASTEXITCODE = 0
 }
 
-Write-Host "Running vpk pack (id=$VelopackId, version=$Version)…"
-& vpk pack `
+Write-Host "Running vpk pack (id=$VelopackId, version=$Version)..."
+& $VpkExe pack `
     --packId $VelopackId `
     --packVersion $Version `
     --packDir $PublishDir `
@@ -199,18 +217,18 @@ if (-not $env:GITHUB_TOKEN) {
     throw "GITHUB_TOKEN env var is not set. Set it to a PAT with 'contents: write' scope on CrysaGaming/vam-acars-client and re-run."
 }
 
-Write-Host "Uploading to GitHub Releases…"
-& vpk upload github `
+Write-Host "Uploading to GitHub Releases..."
+& $VpkExe upload github `
     --repoUrl $RepoUrl `
     --publish `
     --releaseName "v$Version" `
     --tag "v$Version" `
     --token $env:GITHUB_TOKEN
 if ($LASTEXITCODE -ne 0) {
-    throw "vpk upload github failed (exit $LASTEXITCODE) — partial release may remain on GitHub. Inspect $RepoUrl/releases."
+    throw "vpk upload github failed (exit $LASTEXITCODE) -- partial release may remain on GitHub. Inspect $RepoUrl/releases."
 }
 
 Write-Host ""
 Write-Host "============================================================"
-Write-Host " ✅  Release v$Version published to $RepoUrl/releases"
+Write-Host " [OK]  Release v$Version published to $RepoUrl/releases"
 Write-Host "============================================================"
