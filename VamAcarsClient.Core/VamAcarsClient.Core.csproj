@@ -8,6 +8,29 @@
 	</PropertyGroup>
 
 	<ItemGroup>
+		<!--
+			SimConnect managed wrapper. Private=true (== "Copy Local")
+			tells MSBuild to copy the referenced assembly to the
+			output directory as part of normal Reference handling.
+			This is the SINGLE source for the dll's deployment —
+			we used to also have a <None CopyToOutputDirectory>
+			entry for the same file, but on `dotnet publish` that
+			caused NETSDK1152 (duplicate-output) because the managed
+			reference's transitive copy from Core's bin AND the
+			<None> path both wanted to land at the same publish-
+			relative path. Removing the <None> for the managed dll
+			leaves Reference as the canonical mechanism.
+
+			Runtime side-loading still lives in App.xaml.cs's
+			AssemblyLoadContext.Default.Resolving hook (mirrored in
+			Cli/Program.cs) — it kicks in if probing fails for some
+			reason, but with Private=true the dll is right next to
+			the exe so probing succeeds and the resolver is a
+			belt-and-braces backup.
+
+			Found while smoke-testing M5 Phase 1's release.ps1 —
+			see the fix commit message for the reproduction trace.
+		-->
 		<Reference Include="Microsoft.FlightSimulator.SimConnect">
 			<HintPath>C:\MSFS 2024 SDK\SimConnect SDK\lib\managed\Microsoft.FlightSimulator.SimConnect.dll</HintPath>
 			<Private>true</Private>
@@ -17,11 +40,15 @@
 	</ItemGroup>
 
 	<ItemGroup>
-		<None Include="C:\MSFS 2024 SDK\SimConnect SDK\lib\managed\Microsoft.FlightSimulator.SimConnect.dll">
-			<Link>Microsoft.FlightSimulator.SimConnect.dll</Link>
-			<CopyToOutputDirectory>Always</CopyToOutputDirectory>
-			<Visible>false</Visible>
-		</None>
+		<!--
+			Native SimConnect.dll (the P/Invoke target the managed
+			wrapper above calls into). Has NO other deployment
+			mechanism — MSBuild's Reference handling only knows
+			about managed assemblies, so we copy this unmanaged
+			binary explicitly via <None CopyToOutputDirectory>.
+			Cannot be deduplicated against any Reference path
+			because there isn't one.
+		-->
 		<None Include="C:\MSFS 2024 SDK\SimConnect SDK\lib\SimConnect.dll">
 			<Link>SimConnect.dll</Link>
 			<CopyToOutputDirectory>Always</CopyToOutputDirectory>
