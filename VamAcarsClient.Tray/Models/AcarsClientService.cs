@@ -468,7 +468,7 @@ public sealed class AcarsClientService : IDisposable
     /// when the user hasn't expressed intent to fly. On-demand keeps
     /// the contract clean: tray is idle until the user clicks something.
     /// </summary>
-    public async Task<(string? Type, string? Registration, string? Title)?> ProbeAircraftAsync(TimeSpan? timeout = null)
+    public async Task<(string? Type, string? Registration, string? Title, string? SimulatorName, string? SimulatorVersion)?> ProbeAircraftAsync(TimeSpan? timeout = null)
     {
         var deadline = timeout ?? TimeSpan.FromSeconds(5);
 
@@ -480,7 +480,8 @@ public sealed class AcarsClientService : IDisposable
         if (IsRunning && _sim?.LatestTelemetry is { } liveTele)
         {
             _logger.LogDebug("ProbeAircraftAsync: returning live telemetry from running session");
-            return (liveTele.AircraftType, liveTele.AircraftRegistration, liveTele.AircraftTitle);
+            return (liveTele.AircraftType, liveTele.AircraftRegistration, liveTele.AircraftTitle,
+                _sim.SimulatorName, _sim.SimulatorVersion);
         }
 
         // Standalone probe. Run the connect + wait + dispose on a
@@ -507,10 +508,11 @@ public sealed class AcarsClientService : IDisposable
                     if (probe.LatestTelemetry is { } tele)
                     {
                         _logger.LogInformation(
-                            "ProbeAircraftAsync detected aircraft: type={Type}, reg={Reg}, title={Title}",
-                            tele.AircraftType, tele.AircraftRegistration, tele.AircraftTitle);
-                        return ((string? Type, string? Registration, string? Title)?)
-                            (tele.AircraftType, tele.AircraftRegistration, tele.AircraftTitle);
+                            "ProbeAircraftAsync detected aircraft: type={Type}, reg={Reg}, title={Title}, sim={Sim}",
+                            tele.AircraftType, tele.AircraftRegistration, tele.AircraftTitle, probe.SimulatorName);
+                        return ((string? Type, string? Registration, string? Title, string? SimulatorName, string? SimulatorVersion)?)
+                            (tele.AircraftType, tele.AircraftRegistration, tele.AircraftTitle,
+                             probe.SimulatorName, probe.SimulatorVersion);
                     }
                     Thread.Sleep(50);
                 }

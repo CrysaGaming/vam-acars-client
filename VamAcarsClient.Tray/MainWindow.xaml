@@ -804,6 +804,7 @@
                                     <Grid.RowDefinitions>
                                         <RowDefinition Height="Auto" />
                                         <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
                                     </Grid.RowDefinitions>
 
                                     <TextBlock Grid.Row="0" Grid.Column="0"
@@ -816,6 +817,22 @@
                                                Text="Registration" Style="{StaticResource FieldLabel}" />
                                     <TextBlock Grid.Row="1" Grid.Column="1" Margin="0,6,0,0"
                                                Text="{Binding DetectedAircraftRegistration, FallbackValue='—', TargetNullValue='—'}"
+                                               Style="{StaticResource FieldValue}" />
+
+                                    <!--
+                                        Simulator row (option #14). Shows the canonical
+                                        sim-name ("MSFS 2020", "MSFS 2024", "FSX", "Prepar3D",
+                                        or raw szApplicationName for unknown sims) so the
+                                        pilot sees which flight simulator the probe just
+                                        connected to. Bound to State.DetectedSimulator
+                                        which is populated by App.ProbeSimAsync from the
+                                        SimConnect handshake's szApplicationName via
+                                        AcarsClientState.MapSimulatorName.
+                                    -->
+                                    <TextBlock Grid.Row="2" Grid.Column="0" Margin="0,6,0,0"
+                                               Text="Simulator" Style="{StaticResource FieldLabel}" />
+                                    <TextBlock Grid.Row="2" Grid.Column="1" Margin="0,6,0,0"
+                                               Text="{Binding DetectedSimulator, FallbackValue='—', TargetNullValue='—'}"
                                                Style="{StaticResource FieldValue}" />
                                 </Grid>
                             </StackPanel>

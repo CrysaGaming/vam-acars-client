@@ -467,6 +467,64 @@ public class AcarsClientState : INotifyPropertyChanged
         set => SetField(ref _isProbingSim, value);
     }
 
+    private string? _detectedSimulator;
+    /// <summary>
+    /// Canonical sim-name string for the PRE-FLIGHT card display
+    /// (option #14). Populated by <see cref="VamAcarsClient.Tray.App.ProbeSimAsync"/>
+    /// from <see cref="VamAcarsClient.Core.SimConnectClient.SimulatorName"/>
+    /// after the SimConnect handshake. Examples: "MSFS 2020", "MSFS 2024",
+    /// "FSX", "Prepar3D", or the raw szApplicationName for unknown sims.
+    ///
+    /// Distinct from the raw <c>SimulatorName</c> on the SimConnectClient
+    /// — we apply a friendly-name mapper (see <see cref="MapSimulatorName"/>)
+    /// before storing here so the UI shows familiar labels rather than
+    /// MSFS internal strings like "KittyHawk".
+    /// </summary>
+    public string? DetectedSimulator
+    {
+        get => _detectedSimulator;
+        set => SetField(ref _detectedSimulator, value);
+    }
+
+    /// <summary>
+    /// Map the raw szApplicationName from the SimConnect handshake to a
+    /// friendly canonical name shown in the UI (option #14). Falls
+    /// through to the raw input for sims we don't recognise — pilots
+    /// running niche P3D forks or FSX:SE deserve to see their actual
+    /// sim name rather than null. Returns null only when the input is
+    /// null/empty.
+    ///
+    /// MSFS 2020 reports "KittyHawk" (codename) in some builds, "Microsoft
+    /// Flight Simulator" in others. The version-major distinguishes them
+    /// from MSFS 2024's "FlightSimulator2024" which is also occasionally
+    /// reported as "Aircraft 2024". We keep the mapper conservative —
+    /// only mapping strings that are unambiguous, and passing through
+    /// the rest verbatim.
+    /// </summary>
+    public static string? MapSimulatorName(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return null;
+
+        // Case-insensitive contains-match because the wrapped strings
+        // can have surrounding noise ("Microsoft Flight Simulator (Steam)"
+        // / "Microsoft Flight Simulator - SU13"). We check long forms
+        // before short forms so "FSX" doesn't accidentally match
+        // "MSFS X-Plane bridge" or similar future weirdness.
+        if (raw.Contains("2024", StringComparison.OrdinalIgnoreCase))
+            return "MSFS 2024";
+        if (raw.Contains("KittyHawk", StringComparison.OrdinalIgnoreCase)
+            || raw.Contains("Microsoft Flight Simulator", StringComparison.OrdinalIgnoreCase))
+            return "MSFS 2020";
+        if (raw.Contains("Prepar3D", StringComparison.OrdinalIgnoreCase)
+            || raw.Equals("P3D", StringComparison.OrdinalIgnoreCase))
+            return "Prepar3D";
+        if (raw.Contains("Flight Simulator X", StringComparison.OrdinalIgnoreCase)
+            || raw.Equals("FSX", StringComparison.OrdinalIgnoreCase))
+            return "FSX";
+
+        return raw;
+    }
+
     // ─── Crash-recovery (option #13) ─────────────────────────────────
     //
     // Non-null when App.OnStartup found a SessionMarker on disk —

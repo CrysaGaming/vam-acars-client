@@ -74,6 +74,30 @@ public sealed class SimConnectClient : IDisposable
     /// <summary>True if Connect() succeeded and Disconnect() hasn't been called.</summary>
     public bool IsConnected => _sc is not null;
 
+    /// <summary>
+    /// The application-name string the simulator reported during the
+    /// SimConnect handshake (option #14). Examples observed in the
+    /// wild:
+    ///   - "KittyHawk" / "Microsoft Flight Simulator"  → MSFS 2020
+    ///   - "FlightSimulator2024" / "Aircraft 2024"     → MSFS 2024
+    ///   - "Microsoft Flight Simulator X"              → FSX
+    ///   - "Prepar3D"                                  → P3D
+    ///
+    /// Null until <see cref="Connect"/> succeeds and the OnRecvOpen
+    /// handshake-callback fires (typically &lt; 50ms after Connect
+    /// returns). Stays set for the lifetime of the client; cleared on
+    /// next Connect() call.
+    /// </summary>
+    public string? SimulatorName { get; private set; }
+
+    /// <summary>
+    /// Major.Minor build version reported by the sim (option #14).
+    /// Useful for distinguishing MSFS 2020 build 11.x from MSFS 2024
+    /// build 12.x when both happen to report the same szApplicationName
+    /// in some dev builds. Null pre-handshake.
+    /// </summary>
+    public string? SimulatorVersion { get; private set; }
+
     // SimConnect's "open" call requires a Win32 window-handle for the
     // event-notification mechanism — but it accepts IntPtr.Zero, which
     // tells it to create an internal worker-window. We use the latter
@@ -285,9 +309,12 @@ public sealed class SimConnectClient : IDisposable
 
     private void OnRecvOpen(SimConnect _, SIMCONNECT_RECV_OPEN data)
     {
-        // Connection-handshake completed. data.szApplicationName is
-        // "Microsoft Flight Simulator" or similar — log it so the
-        // file shows which sim variant the user is on.
+        // Connection-handshake completed. Capture the sim identity
+        // (option #14) so the tray-app can surface "MSFS 2020" /
+        // "MSFS 2024" / "P3D" / "FSX" in the PRE-FLIGHT card.
+        SimulatorName = data.szApplicationName;
+        SimulatorVersion = $"{data.dwApplicationVersionMajor}.{data.dwApplicationVersionMinor}";
+
         _logger.LogInformation(
             "SimConnect: handshake OK with {AppName} (build {Major}.{Minor})",
             data.szApplicationName, data.dwApplicationVersionMajor, data.dwApplicationVersionMinor);

@@ -687,6 +687,15 @@ public partial class App : Application
                 State.DetectedAircraftType = r.Type;
                 State.DetectedAircraftRegistration = r.Registration;
                 State.DetectedAircraftTitle = r.Title;
+                // Option #14: map the raw szApplicationName to a friendly
+                // canonical name ("MSFS 2020", "MSFS 2024", "FSX", "P3D")
+                // before displaying. MapSimulatorName falls through to
+                // the raw input for unknown sims, so niche P3D forks /
+                // FSX:SE still see their actual sim name. We don't
+                // include the version major.minor in the visible label —
+                // pilots care about which sim, not which build, and the
+                // raw version is in the log anyway.
+                State.DetectedSimulator = AcarsClientState.MapSimulatorName(r.SimulatorName);
 
                 // "UNKN" is the SimTelemetry sentinel for empty values
                 // (see SimTelemetry.AircraftType). Treat it as "no
@@ -694,15 +703,20 @@ public partial class App : Application
                 // pretending we got useful data.
                 if (string.IsNullOrEmpty(r.Type) || r.Type == "UNKN")
                 {
-                    State.StatusMessage = "Sim erreichbar, aber kein Flugzeug geladen.";
+                    State.StatusMessage = string.IsNullOrWhiteSpace(State.DetectedSimulator)
+                        ? "Sim erreichbar, aber kein Flugzeug geladen."
+                        : $"{State.DetectedSimulator} erreichbar, aber kein Flugzeug geladen.";
                 }
                 else
                 {
-                    State.StatusMessage = $"Flugzeug erkannt: {r.Type} / {r.Registration ?? "—"}";
+                    var simPrefix = string.IsNullOrWhiteSpace(State.DetectedSimulator)
+                        ? "Flugzeug"
+                        : State.DetectedSimulator;
+                    State.StatusMessage = $"{simPrefix}: {r.Type} / {r.Registration ?? "—"}";
                 }
                 _logger?.LogInformation(
-                    "Sim probe succeeded: type={Type}, reg={Reg}",
-                    r.Type, r.Registration);
+                    "Sim probe succeeded: type={Type}, reg={Reg}, sim={Sim} {SimVersion}",
+                    r.Type, r.Registration, r.SimulatorName, r.SimulatorVersion);
             }
             else
             {
@@ -711,6 +725,7 @@ public partial class App : Application
                 State.DetectedAircraftType = null;
                 State.DetectedAircraftRegistration = null;
                 State.DetectedAircraftTitle = null;
+                State.DetectedSimulator = null;
                 State.StatusMessage = "MSFS nicht erreichbar. Sim gestartet?";
                 _logger?.LogInformation("Sim probe returned null (MSFS not running or timeout)");
             }
