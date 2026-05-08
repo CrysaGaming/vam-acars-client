@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.IO;
 using System.Net.Http;
 using System.Reflection;
@@ -94,6 +95,46 @@ public partial class App : Application
     /// lifetime of the app.
     /// </summary>
     public AcarsClientService? Service => _acarsService;
+
+    /// <summary>
+    /// Status → tooltip-suffix map for the tray icon. The tray icon
+    /// itself stays at the cyan brand colour for the lifetime of the
+    /// app (loaded once via XAML's <c>IconSource</c> from
+    /// <c>app-disconnected.ico</c>); state communication is handled
+    /// entirely by the tooltip + the in-window status pill / button /
+    /// live readouts.
+    ///
+    /// Why no per-state icon swap any more: Windows 11's tray
+    /// rendering layer caches icons by their notification GUID. Once
+    /// explorer.exe has rendered an icon for a given GUID, subsequent
+    /// updates via <c>NIM_MODIFY</c> are silently dropped at the
+    /// rendering layer (the Win32 call returns success, the tooltip
+    /// half of the same call updates correctly, but the icon pixels
+    /// don't refresh). We chased this through five workaround paths,
+    /// including <c>NIM_DELETE + NIM_ADD</c> with the same GUID and
+    /// per-transition GUID rotation. The GUID-rotation approach
+    /// technically works (each new GUID gets rendered correctly),
+    /// but Win11 puts every fresh GUID into the hidden-tray flyout by
+    /// default — there is no documented API to promote a notify-icon
+    /// to the always-visible tray, only the user can drag it out.
+    /// Net effect for our use-case: dynamic colours land in a place
+    /// most users never look, and rotation accumulates orphan
+    /// registry rows in <c>HKCU\…\NotifyIconSettings</c>.
+    ///
+    /// The window already conveys state via three redundant signals
+    /// (coloured pill, button label/colour, live status text), so
+    /// shedding the tray-colour aspiration is a clean trade.
+    ///
+    /// Tooltip strings stay short of Windows' ~63-char limit so the
+    /// shell doesn't truncate.
+    /// </summary>
+    private static readonly Dictionary<ConnectionStatus, string> StatusTooltipMap = new()
+    {
+        [ConnectionStatus.Disconnected] = "VAM ACARS Client — Getrennt",
+        [ConnectionStatus.Connecting]   = "VAM ACARS Client — Verbinde…",
+        [ConnectionStatus.Connected]    = "VAM ACARS Client — Verbunden",
+        [ConnectionStatus.Error]        = "VAM ACARS Client — Fehler",
+    };
 
     protected override void OnStartup(StartupEventArgs e)
     {
@@ -225,9 +266,78 @@ public partial class App : Application
             _logger.LogError(ex, "TaskbarIcon.ForceCreate() threw — Shell_NotifyIcon registration failed");
         }
 
+        // ─── Status → tray-tooltip binding (M4 Phase 4) ────────────────
+        // Subscribe to State.PropertyChanged so the tray tooltip
+        // reflects the current ConnectionStatus. The XAML's
+        // IconSource (app-disconnected.ico, cyan) is the permanent
+        // visual — see StatusTooltipMap remarks for the rationale.
+        // We call UpdateTrayIcon explicitly here so the initial
+        // tooltip starts as "— Getrennt" instead of the bare brand
+        // name baked into the XAML resource definition.
+        State.PropertyChanged += OnStatePropertyChanged;
+        UpdateTrayIcon();
+
         _logger.LogInformation(
             "Tray icon initialized. Token present: {HasToken}, Service ready",
             State.HasToken);
+    }
+
+    /// <summary>
+    /// State-change handler. Filters for <see cref="AcarsClientState.ConnectionStatus"/>
+    /// and pushes the new visual into the tray. Other property changes
+    /// (status-message, counters, callsign, etc.) are picked up by the
+    /// MainWindow's data-bindings directly — they don't need to ping
+    /// the tray, which only encodes a coarse 4-state view.
+    ///
+    /// Runs on whichever thread fires PropertyChanged. The heartbeat-
+    /// service marshalls onto the WPF dispatcher before mutating state
+    /// (see AcarsClientService.MarshalToUi), so in practice this is
+    /// always on the UI thread, which is required for the IconSource
+    /// DependencyProperty assignment.
+    /// </summary>
+    private void OnStatePropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName == nameof(AcarsClientState.ConnectionStatus))
+        {
+            UpdateTrayIcon();
+        }
+    }
+
+    /// <summary>
+    /// Apply the current <see cref="AcarsClientState.ConnectionStatus"/>
+    /// to the tray icon's tooltip. The icon image itself is fixed for
+    /// the lifetime of the app (XAML's <c>IconSource</c> loads
+    /// <c>app-disconnected.ico</c>) — see <see cref="StatusTooltipMap"/>'s
+    /// remarks for why we don't swap colours per state.
+    ///
+    /// Idempotent; safe to call multiple times. No-op if the tray
+    /// icon couldn't be instantiated (ForceCreate failed) — the rest
+    /// of the app still functions, the user just won't have a
+    /// tray-click affordance.
+    /// </summary>
+    private void UpdateTrayIcon()
+    {
+        if (_trayIcon is null) return;
+        if (!StatusTooltipMap.TryGetValue(State.ConnectionStatus, out var tooltip))
+        {
+            // Defensive fallback for unmapped enum values — log,
+            // don't crash. Would only happen if a future commit adds
+            // a status and forgets to update StatusTooltipMap.
+            _logger?.LogWarning(
+                "No tooltip mapping for ConnectionStatus={Status} — leaving previous tooltip",
+                State.ConnectionStatus);
+            return;
+        }
+
+        // ToolTipText is a WPF DependencyProperty on TaskbarIcon; the
+        // setter routes through H.NotifyIcon's internal NIM_MODIFY
+        // with NIF_TIP, which Windows 11 honours correctly (unlike
+        // NIF_ICON in the same call — see StatusTooltipMap remarks).
+        _trayIcon.ToolTipText = tooltip;
+
+        _logger?.LogDebug(
+            "Tray tooltip updated for {Status}: {Tooltip}",
+            State.ConnectionStatus, tooltip);
     }
 
     /// <summary>
@@ -283,6 +393,13 @@ public partial class App : Application
     protected override void OnExit(ExitEventArgs e)
     {
         _logger?.LogInformation("VamAcarsClient.Tray shutting down");
+
+        // Unsubscribe the tray-icon updater so we don't get a stray
+        // PropertyChanged callback during teardown that touches an
+        // already-disposed _trayIcon. State and App share a lifetime,
+        // so this is more cleanliness than necessity, but it makes
+        // the OnExit ordering explicit.
+        State.PropertyChanged -= OnStatePropertyChanged;
 
         // Service first — if it's still running, kick the cancellation
         // tokens so the SimConnect poll-loop and HeartbeatService stop

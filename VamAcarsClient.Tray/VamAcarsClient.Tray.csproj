@@ -16,12 +16,13 @@
 		<AssemblyName>VamAcarsClientTray</AssemblyName>
 
 		<!--
-			ApplicationIcon controls the .exe's file-explorer icon.
-			NotifyIcon.Wpf displays its own DataContext-bound icon at
-			runtime, which is independent of this. We point both at the
-			same .ico resource for visual consistency.
+			ApplicationIcon controls the .exe's file-explorer icon and
+			the WPF window's title-bar icon. Same .ico that the
+			TaskbarIcon's IconSource points at — keeps the desktop
+			experience visually consistent across the explorer entry,
+			the running-window taskbar slot, and the tray.
 		-->
-		<ApplicationIcon>Resources\app.ico</ApplicationIcon>
+		<ApplicationIcon>Resources\app-disconnected.ico</ApplicationIcon>
 	</PropertyGroup>
 
 	<ItemGroup>
@@ -63,8 +64,18 @@
 		<PackageReference Include="Serilog.Sinks.File" Version="7.0.0" />
 	</ItemGroup>
 
+	<!--
+		Tray icon resource. Originally we shipped four colour variants
+		(cyan/yellow/green/red) and swapped at runtime to reflect
+		AcarsClientState.ConnectionStatus, but Win11's tray rendering
+		layer caches icons by GUID and silently drops NIM_MODIFY icon
+		updates — see App.xaml.cs's StatusTooltipMap remarks for the
+		full investigation. State communication now lives entirely in
+		the in-window pill / button / live readouts plus the tray
+		tooltip, which Win11 honours correctly.
+	-->
 	<ItemGroup>
-		<Resource Include="Resources\app.ico" />
+		<Resource Include="Resources\app-disconnected.ico" />
 	</ItemGroup>
 
 </Project>

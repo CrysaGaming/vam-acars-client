@@ -29,17 +29,19 @@
             get garbage-collected. Without that GC-pin, the icon
             disappears unpredictably after the first GC pass.
 
-            IconSource: pack URI into the embedded Resources/app.ico.
-            The placeholder is a 16x16 dark-blue square with "VAM" text.
-            Replace at any time — H.NotifyIcon hot-reloads when the
-            DependencyProperty changes.
+            IconSource: pack URI into the embedded Resources directory.
+            Loaded once at app construction and never swapped — see
+            App.xaml.cs's StatusTooltipMap remarks for the rationale.
+            Status communication is conveyed by the tray tooltip
+            (which Win11 honours correctly) and the in-window
+            pill / button / live readouts.
 
             NoLeftClickDelay=True: makes tray-icon left-click respond
             instantly (default has a delay to differentiate from
             double-click). Single-click → toggle window visibility.
         -->
         <tb:TaskbarIcon x:Key="VamTrayIcon"
-                        IconSource="pack://application:,,,/Resources/app.ico"
+                        IconSource="pack://application:,,,/Resources/app-disconnected.ico"
                         ToolTipText="VAM ACARS Client"
                         NoLeftClickDelay="True"
                         TrayLeftMouseDown="OnTrayLeftClick">
