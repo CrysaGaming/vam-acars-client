@@ -388,7 +388,7 @@
                                 <TextBlock Grid.Row="2" Grid.Column="0" Margin="0,6,0,0"
                                            Text="Phase" Style="{StaticResource FieldLabel}" />
                                 <TextBlock Grid.Row="2" Grid.Column="1" Margin="0,6,0,0"
-                                           Text="{Binding CurrentPhase, FallbackValue='—', TargetNullValue='—'}"
+                                           Text="{Binding PhaseDisplay, FallbackValue='—', TargetNullValue='—'}"
                                            Style="{StaticResource FieldValue}" />
                             </Grid>
                         </Border>

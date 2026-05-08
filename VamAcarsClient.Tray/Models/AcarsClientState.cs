@@ -137,6 +137,66 @@ public class AcarsClientState : INotifyPropertyChanged
         set => SetField(ref _phaseEnteredAt, value);
     }
 
+    /// <summary>
+    /// Computed phase + elapsed-time string for the FLUG-KONTEXT Phase row.
+    /// Returns formats like "Cruise — 0:42" (under an hour) or
+    /// "Cruise — 1:42:03" (over an hour); returns null when there's
+    /// nothing meaningful to show, which lets the WPF binding's
+    /// TargetNullValue kick in to render an em-dash.
+    ///
+    /// Why a computed property rather than a regular setter that we
+    /// update each tick: the source-of-truth values (<see cref="CurrentPhase"/>
+    /// + <see cref="PhaseEnteredAt"/>) only change on phase transitions,
+    /// not every second. Computing the elapsed-time on read keeps both
+    /// of those clean. The downside is WPF won't auto-refresh the binding
+    /// — we need to raise PropertyChanged explicitly on a 1Hz tick from
+    /// the UI side. <see cref="RaisePhaseDisplayChanged"/> is the hook
+    /// for that; <see cref="MainWindow"/> drives it via DispatcherTimer.
+    ///
+    /// Defensive returns: empty/null phase, null PhaseEnteredAt, or
+    /// negative elapsed (clock-skew) all degrade gracefully — we either
+    /// return the bare phase name without elapsed, or null. Never throw,
+    /// never display garbage like "Cruise — -1:32".
+    /// </summary>
+    public string? PhaseDisplay
+    {
+        get
+        {
+            if (string.IsNullOrWhiteSpace(_currentPhase)) return null;
+            if (_phaseEnteredAt is null) return _currentPhase;
+
+            var elapsed = DateTimeOffset.UtcNow - _phaseEnteredAt.Value;
+            if (elapsed.TotalSeconds < 0) return _currentPhase;
+
+            var totalMin = (int)elapsed.TotalMinutes;
+            var sec = elapsed.Seconds;
+            if (totalMin < 60)
+            {
+                return $"{_currentPhase} — {totalMin}:{sec:D2}";
+            }
+            var hr = totalMin / 60;
+            var min = totalMin % 60;
+            return $"{_currentPhase} — {hr}:{min:D2}:{sec:D2}";
+        }
+    }
+
+    /// <summary>
+    /// Pokes WPF to re-evaluate any bindings on <see cref="PhaseDisplay"/>.
+    /// Called from the UI's per-second DispatcherTimer in
+    /// <see cref="MainWindow"/>. Cheap: a single PropertyChanged event
+    /// raise — no allocation beyond the event-args itself which the
+    /// runtime caches via the property-name-string interning.
+    ///
+    /// We expose this as a method rather than driving it from a setter
+    /// because there's no underlying field to set. CurrentPhase and
+    /// PhaseEnteredAt have their own setters that already fire
+    /// PropertyChanged; this is purely the per-tick refresh path.
+    /// </summary>
+    public void RaisePhaseDisplayChanged()
+    {
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(PhaseDisplay)));
+    }
+
     // ─── Throughput counters ─────────────────────────────────────────
 
     private int _heartbeatsSent;

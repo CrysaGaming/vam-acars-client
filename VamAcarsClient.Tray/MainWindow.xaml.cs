@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Windows;
+using System.Windows.Threading;
 using VamAcarsClient.Core;
 
 namespace VamAcarsClient.Tray;
@@ -24,10 +25,58 @@ namespace VamAcarsClient.Tray;
 /// </summary>
 public partial class MainWindow : Window
 {
+    /// <summary>
+    /// Drives 1Hz refreshes of <see cref="Models.AcarsClientState.PhaseDisplay"/>
+    /// so the elapsed-time portion ("Cruise — 0:42") ticks live without
+    /// the source-of-truth fields (CurrentPhase + PhaseEnteredAt) having
+    /// to fire PropertyChanged on every second. DispatcherTimer fires
+    /// on the UI thread, so the binding-engine work happens where it
+    /// needs to anyway. 1s interval is the resolution of the displayed
+    /// "m:ss" — finer would just waste cycles, coarser would visibly stutter.
+    ///
+    /// The timer runs unconditionally for the lifetime of the window
+    /// (which is the lifetime of the app, since the window only ever
+    /// hides + shows, never disposes). When CurrentPhase is null the
+    /// computed property returns null and the binding shows "—" via
+    /// TargetNullValue — the tick is harmless. CPU cost is negligible:
+    /// one PropertyChanged raise + one binding-engine re-eval of a
+    /// small string per second.
+    /// </summary>
+    private readonly DispatcherTimer _phaseTickTimer;
+
     public MainWindow()
     {
         InitializeComponent();
         PopulateFromSavedContext();
+
+        // 1Hz tick to refresh the elapsed-time portion of the Phase row.
+        // Hooked up after InitializeComponent so the binding-engine has
+        // already wired up; no risk of firing before the binding exists.
+        _phaseTickTimer = new DispatcherTimer
+        {
+            Interval = TimeSpan.FromSeconds(1),
+        };
+        _phaseTickTimer.Tick += OnPhaseTick;
+        _phaseTickTimer.Start();
+    }
+
+    /// <summary>
+    /// Per-second handler that nudges the state to re-evaluate
+    /// <see cref="Models.AcarsClientState.PhaseDisplay"/>. The state
+    /// raises PropertyChanged for the computed property and WPF's
+    /// binding-engine fetches the new value — same path a regular
+    /// setter would take, just driven by the clock instead of by an
+    /// assignment.
+    ///
+    /// Defensive null-check on app.State because at very-early-startup
+    /// (before App.OnStartup completes) Application.Current cast might
+    /// race; cheap to guard, no observed crash but symmetry with other
+    /// handlers that do the same.
+    /// </summary>
+    private void OnPhaseTick(object? sender, EventArgs e)
+    {
+        var app = (App)Application.Current;
+        app.State?.RaisePhaseDisplayChanged();
     }
 
     /// <summary>
