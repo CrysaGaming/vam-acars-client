@@ -181,6 +181,71 @@ public class AcarsClientState : INotifyPropertyChanged
         set => SetField(ref _autoStartEnabled, value);
     }
 
+    // ─── Updates (Velopack) ──────────────────────────────────────────
+
+    private string _installedVersion = "dev";
+    /// <summary>
+    /// The currently running version, populated at
+    /// <see cref="App.OnStartup"/>. For a Velopack-installed copy this
+    /// is the SemVer Velopack tracks via the manifest in
+    /// <c>%LOCALAPPDATA%\VamAcarsClient\current\</c>; for a dev /
+    /// debug run from <c>bin\Debug</c> Velopack reports
+    /// <see cref="UpdateException.NotInstalled"/> and we fall back to
+    /// the literal <c>"dev"</c> so the bound EINSTELLUNGEN row says
+    /// "Version: dev" — which is the truth, and a clearer signal than
+    /// pretending we know a version we don't.
+    /// </summary>
+    public string InstalledVersion
+    {
+        get => _installedVersion;
+        set => SetField(ref _installedVersion, value);
+    }
+
+    private bool _updateAvailable;
+    /// <summary>
+    /// True when <see cref="UpdateService.CheckForUpdatesAsync"/> has
+    /// found a newer release on the configured update source than
+    /// <see cref="InstalledVersion"/>. Drives the "Update verfügbar"
+    /// indicator + button visibility in the EINSTELLUNGEN card.
+    ///
+    /// Stays false when we're running from a non-Velopack-installed
+    /// build (dev run, CI), even if a newer release exists — we
+    /// can't actually apply an update to an un-installed copy, so
+    /// no point teasing the UI.
+    /// </summary>
+    public bool UpdateAvailable
+    {
+        get => _updateAvailable;
+        set => SetField(ref _updateAvailable, value);
+    }
+
+    private string? _latestVersion;
+    /// <summary>
+    /// Version string of the pending update (null when no update
+    /// available). Surfaced as "Update verfügbar: 0.2.0" in the
+    /// EINSTELLUNGEN card. Set alongside <see cref="UpdateAvailable"/>
+    /// so the UI gets a single coherent transition.
+    /// </summary>
+    public string? LatestVersion
+    {
+        get => _latestVersion;
+        set => SetField(ref _latestVersion, value);
+    }
+
+    private bool _updateDownloaded;
+    /// <summary>
+    /// True after <see cref="UpdateService.DownloadUpdatesAsync"/>
+    /// completes successfully. Gates the "Installieren" button —
+    /// while we're still downloading the user shouldn't be able to
+    /// click apply, because <c>ApplyUpdatesAndRestart</c> needs the
+    /// nupkg on disk first.
+    /// </summary>
+    public bool UpdateDownloaded
+    {
+        get => _updateDownloaded;
+        set => SetField(ref _updateDownloaded, value);
+    }
+
     // ─── INotifyPropertyChanged plumbing ─────────────────────────────
 
     public event PropertyChangedEventHandler? PropertyChanged;

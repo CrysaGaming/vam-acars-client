@@ -3,8 +3,8 @@
 	<PropertyGroup>
 		<!--
 			WinExe (not Exe) so launching from Explorer doesn't pop a
-			console window. WPF-app convention. The startup is still
-			Program.cs / App.xaml.cs — same as a normal WPF.
+			console window. WPF-app convention. Entry-point is the
+			explicit Main in Program.cs (see <StartupObject> below).
 		-->
 		<OutputType>WinExe</OutputType>
 		<TargetFramework>net10.0-windows</TargetFramework>
@@ -16,6 +16,29 @@
 		<AssemblyName>VamAcarsClientTray</AssemblyName>
 
 		<!--
+			Explicit entry-point. Default WPF auto-generates a Main from
+			App.xaml's <ApplicationDefinition>; we override with our own
+			Program.Main so we can call VelopackApp.Build().Run() before
+			any WPF type loads. Velopack runs the binary at install /
+			update / first-run hooks with special argv, and we want
+			those hooks to short-circuit BEFORE the dispatcher, the
+			MainWindow, the SimConnect resolver, etc. fire — that's a
+			big perf win on update-apply (process exits in ~50 ms
+			instead of ~600 ms). The <ApplicationDefinition Remove>
+			pair below disables the auto-Main generation.
+		-->
+		<StartupObject>VamAcarsClient.Tray.Program</StartupObject>
+
+		<!--
+			Application version surfaced via Velopack and the bound
+			"Version: x.y.z" line in the EINSTELLUNGEN card. This is
+			the source of truth for SemVer; vpk pack reads it via
+			AssemblyInformationalVersion. Bump on every release —
+			0.1.0 is the first M5-shipped build.
+		-->
+		<Version>0.1.0</Version>
+
+		<!--
 			ApplicationIcon controls the .exe's file-explorer icon and
 			the WPF window's title-bar icon. Same .ico that the
 			TaskbarIcon's IconSource points at — keeps the desktop
@@ -24,6 +47,20 @@
 		-->
 		<ApplicationIcon>Resources\app-disconnected.ico</ApplicationIcon>
 	</PropertyGroup>
+
+	<!--
+		App.xaml needs to be a Page (compiled into the assembly as a
+		BAML resource), NOT an ApplicationDefinition (which would tell
+		the WPF SDK to generate a Main from <Application StartupUri>).
+		We have a custom Main in Program.cs, so the auto-generated one
+		would conflict. The Remove + Page pair is the canonical pattern
+		for "I want a custom Main but App.xaml stays compiled" — see
+		velopack.docs/getting-started/csharp.mdx for context.
+	-->
+	<ItemGroup>
+		<ApplicationDefinition Remove="App.xaml" />
+		<Page Include="App.xaml" />
+	</ItemGroup>
 
 	<ItemGroup>
 		<ProjectReference Include="..\VamAcarsClient.Core\VamAcarsClient.Core.csproj" />
@@ -62,6 +99,16 @@
 		<PackageReference Include="Serilog.Extensions.Logging" Version="10.0.0" />
 		<PackageReference Include="Serilog.Settings.Configuration" Version="10.0.0" />
 		<PackageReference Include="Serilog.Sinks.File" Version="7.0.0" />
+
+		<!--
+			Velopack: install + auto-update framework. We use the
+			runtime SDK only (Velopack package), NOT Velopack.Build,
+			so packaging stays a deliberate manual step via the
+			release.ps1 script — auto-pack on every Release build
+			would slow normal dev builds for a workflow we run
+			maybe once a week. https://velopack.io/
+		-->
+		<PackageReference Include="Velopack" Version="0.0.1298" />
 	</ItemGroup>
 
 	<!--

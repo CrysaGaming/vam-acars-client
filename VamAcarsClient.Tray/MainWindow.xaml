@@ -7,7 +7,7 @@
         mc:Ignorable="d"
         Title="VAM ACARS Client"
         Width="480"
-        Height="540"
+        Height="620"
         ResizeMode="CanMinimize"
         WindowStartupLocation="CenterScreen"
         Background="#1c1c23"
@@ -39,6 +39,15 @@
         <SolidColorBrush x:Key="AccentGreen" Color="#5dd594" />
         <SolidColorBrush x:Key="AccentRed" Color="#ff7a87" />
         <SolidColorBrush x:Key="AccentYellow" Color="#f5c451" />
+
+        <!--
+            Bool → Visibility for the conditional update notice in
+            EINSTELLUNGEN. WPF has a built-in BooleanToVisibilityConverter
+            in System.Windows.Controls that maps true → Visible and
+            false → Collapsed (NOT Hidden — Collapsed removes from
+            layout). Declared once here, referenced by key below.
+        -->
+        <BooleanToVisibilityConverter x:Key="BoolToVis" />
 
         <!--
             "Card": grouped section with rounded border and inner padding.
@@ -463,6 +472,116 @@
                                   IsChecked="{Binding AutoStartEnabled, Mode=OneWay}"
                                   Click="OnAutoStartClick"
                                   ToolTip="Startet den VAM ACARS Client automatisch beim Windows-Login (HKCU\…\Run, kein Admin nötig)." />
+
+                        <!--
+                            Version + update controls (M5). Layout:
+                            permanent "Version: x.y.z" line, then a
+                            conditional block (Visibility bound to
+                            UpdateAvailable) showing the new version
+                            and an "Installieren" button. Button is
+                            gated on UpdateDownloaded so the user
+                            can't apply mid-download — once download
+                            completes it goes live.
+
+                            The version label uses Consolas to match
+                            the FieldValue style elsewhere; "Version:"
+                            label uses FieldLabel for visual parity.
+                        -->
+                        <Grid Margin="0,16,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0"
+                                       Text="Version" Style="{StaticResource FieldLabel}" />
+                            <TextBlock Grid.Column="1"
+                                       Text="{Binding InstalledVersion, FallbackValue='dev'}"
+                                       Style="{StaticResource FieldValue}" />
+                        </Grid>
+
+                        <!--
+                            Update-available block. Visibility is bound to
+                            State.UpdateAvailable via BoolToVis converter,
+                            so the whole block disappears (Collapsed)
+                            when there's nothing to install. The download
+                            phase is differentiated by a small text below
+                            the version line: "Wird heruntergeladen…"
+                            until UpdateDownloaded flips, then the
+                            button becomes clickable.
+                        -->
+                        <StackPanel Margin="0,8,0,0"
+                                    Visibility="{Binding UpdateAvailable, Converter={StaticResource BoolToVis}}">
+                            <TextBlock Foreground="{StaticResource AccentBlue}" FontSize="12">
+                                <Run Text="Update verfügbar: " />
+                                <Run Text="{Binding LatestVersion, FallbackValue='?', Mode=OneWay}" FontWeight="SemiBold" />
+                            </TextBlock>
+                            <!--
+                                "Wird heruntergeladen…" placeholder when
+                                update is detected but nupkg not yet on
+                                disk. Hides itself once UpdateDownloaded
+                                flips so we don't show "downloading…"
+                                next to a clickable Install button.
+                            -->
+                            <TextBlock Text="Wird heruntergeladen…"
+                                       Foreground="{StaticResource TextMuted}"
+                                       FontSize="11"
+                                       Margin="0,2,0,0">
+                                <TextBlock.Style>
+                                    <Style TargetType="TextBlock">
+                                        <Setter Property="Visibility" Value="Visible" />
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding UpdateDownloaded}" Value="True">
+                                                <Setter Property="Visibility" Value="Collapsed" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </TextBlock.Style>
+                            </TextBlock>
+                            <!--
+                                Install button. Smaller than the primary
+                                Connect button; we inline the styling to
+                                avoid bloating Window.Resources for a
+                                single use. Disabled until the download
+                                finishes (UpdateDownloaded=true).
+                            -->
+                            <Button x:Name="ApplyUpdateButton"
+                                    Content="Update installieren"
+                                    Click="OnApplyUpdateClick"
+                                    IsEnabled="{Binding UpdateDownloaded}"
+                                    HorizontalAlignment="Left"
+                                    Margin="0,6,0,0"
+                                    Padding="14,6"
+                                    Background="{StaticResource AccentBlue}"
+                                    Foreground="{StaticResource BgPrimary}"
+                                    FontSize="12"
+                                    FontWeight="SemiBold"
+                                    BorderThickness="0"
+                                    Cursor="Hand">
+                                <Button.Template>
+                                    <ControlTemplate TargetType="Button">
+                                        <Border Background="{TemplateBinding Background}"
+                                                CornerRadius="4"
+                                                Padding="{TemplateBinding Padding}">
+                                            <ContentPresenter HorizontalAlignment="Center"
+                                                              VerticalAlignment="Center"
+                                                              TextElement.Foreground="{TemplateBinding Foreground}" />
+                                        </Border>
+                                    </ControlTemplate>
+                                </Button.Template>
+                                <Button.Style>
+                                    <Style TargetType="Button">
+                                        <Style.Triggers>
+                                            <Trigger Property="IsEnabled" Value="False">
+                                                <Setter Property="Opacity" Value="0.5" />
+                                            </Trigger>
+                                            <Trigger Property="IsMouseOver" Value="True">
+                                                <Setter Property="Opacity" Value="0.85" />
+                                            </Trigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </Button.Style>
+                            </Button>
+                        </StackPanel>
                     </StackPanel>
                 </Border>
 

@@ -99,6 +99,18 @@ public partial class App : Application
     private AutoStartService? _autoStartService;
 
     /// <summary>
+    /// Velopack update orchestrator. Probes GitHub Releases at startup
+    /// (fire-and-forget background task), keeps
+    /// <see cref="AcarsClientState.UpdateAvailable"/> /
+    /// <see cref="AcarsClientState.LatestVersion"/> /
+    /// <see cref="AcarsClientState.UpdateDownloaded"/> in sync. The
+    /// MainWindow's "Installieren" button drives <see cref="ApplyUpdate"/>
+    /// which exits the process and re-launches the new version. Null
+    /// before OnStartup completes.
+    /// </summary>
+    private UpdateService? _updateService;
+
+    /// <summary>
     /// Heartbeat-lifecycle owner. Created once in OnStartup, reused
     /// across Start/Stop cycles. Exposed via <see cref="Service"/> so
     /// MainWindow's Connect/Disconnect button can drive it.
@@ -289,6 +301,31 @@ public partial class App : Application
             State.AutoStartEnabled = false;
         }
 
+        // ─── Velopack updater (M5) ─────────────────────────────────────
+        // Construct after AutoStart so the update-check fires while the
+        // rest of OnStartup is still running. The check is async + non-
+        // blocking (fire-and-forget) so we don't gate window-open on
+        // the network round-trip to api.github.com — the user gets the
+        // tray icon and a working app immediately, and the "Update
+        // verfügbar" indicator pops in a few hundred ms later if there
+        // is one.
+        //
+        // Repo URL is hardcoded for v0.x. If we ever move releases to
+        // another repo (or split stable / beta channels onto separate
+        // repos), this becomes a VamConfig field. For now it lives
+        // alongside the same constant baked into release.ps1, so a
+        // repo move is a two-place coordinated change.
+        const string ReleaseRepoUrl = "https://github.com/CrysaGaming/vam-acars-client";
+        _updateService = new UpdateService(_loggerFactory!, State, Dispatcher, ReleaseRepoUrl);
+        State.InstalledVersion = _updateService.GetInstalledVersion();
+        _logger.LogInformation("Installed version: {Version}", State.InstalledVersion);
+
+        // Fire-and-forget. The service marshals UI updates back onto
+        // our dispatcher; we just kick the work off and don't await.
+        // Discarded with `_ =` so the compiler doesn't complain about
+        // an unobserved task.
+        _ = _updateService.CheckAndDownloadAsync();
+
         // ─── HttpClient + AcarsClientService ──────────────────────────
         // Single HttpClient for the process. AcarsClientService borrows
         // it (doesn't own it) so we can recycle Start/Stop without
@@ -446,6 +483,41 @@ public partial class App : Application
             // the write partially succeeded.
             State.AutoStartEnabled = _autoStartService.IsEnabled();
         }
+    }
+
+    /// <summary>
+    /// Drives the "Installieren" button in the EINSTELLUNGEN card.
+    /// Delegates to <see cref="UpdateService.ApplyUpdate"/> which
+    /// exits this process and re-launches the new version via the
+    /// Velopack helper. Stops the heartbeat service first so an
+    /// in-flight HTTP request doesn't get torn mid-flight by the
+    /// Process.Exit Velopack triggers — the server-side stale-session
+    /// cleanup from M3.9 would handle a hard-cut, but a clean stop
+    /// is friendlier to the cooperating side.
+    ///
+    /// Returns silently when no update is staged. The caller (the
+    /// XAML button's IsEnabled binding) shouldn't call this without
+    /// <see cref="AcarsClientState.UpdateDownloaded"/> being true,
+    /// but defensive null-check is cheap.
+    /// </summary>
+    public void ApplyUpdate()
+    {
+        if (_updateService is null) return;
+
+        _logger?.LogInformation("Applying update on user request — stopping heartbeats first");
+
+        // Best-effort stop. Don't await — ApplyUpdate is invoked
+        // from a click handler, we want the apply to fire promptly.
+        // Velopack's ApplyUpdatesAndRestart will Process.Exit() this
+        // process anyway, so any in-flight heartbeat will be reaped
+        // by the OS within microseconds either way; the StopAsync
+        // call is a courtesy.
+        if (_acarsService?.IsRunning == true)
+        {
+            _ = _acarsService.StopAsync();
+        }
+
+        _updateService.ApplyUpdate();
     }
 
     /// <summary>

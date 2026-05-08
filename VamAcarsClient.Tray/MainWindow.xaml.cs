@@ -167,4 +167,24 @@ public partial class MainWindow : Window
         var enabled = AutoStartCheck.IsChecked == true;
         app.SetAutoStart(enabled);
     }
+
+    /// <summary>
+    /// Update-installieren button handler (M5). Delegates to
+    /// <see cref="App.ApplyUpdate"/>, which stops the heartbeat
+    /// service and then hands off to Velopack's
+    /// <c>ApplyUpdatesAndRestart</c>. The current process exits
+    /// inside that call and the new version re-launches a moment
+    /// later — there's no UI work to do after returning from
+    /// ApplyUpdate, because in practice it doesn't return.
+    ///
+    /// The XAML binds <c>IsEnabled</c> to
+    /// <see cref="Models.AcarsClientState.UpdateDownloaded"/>, so
+    /// this handler will never fire before the nupkg is actually
+    /// staged. No additional gating needed here.
+    /// </summary>
+    private void OnApplyUpdateClick(object sender, RoutedEventArgs e)
+    {
+        var app = (App)Application.Current;
+        app.ApplyUpdate();
+    }
 }
