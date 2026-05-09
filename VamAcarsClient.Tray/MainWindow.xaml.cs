@@ -315,6 +315,34 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
+    /// "Gerät pairen…" button handler. Opens <see cref="PairingDialog"/>
+    /// as a modal window owned by this MainWindow, so it sits centred
+    /// and blocks input until the user finishes (or cancels) pairing.
+    ///
+    /// On dialog success (DialogResult=true) we don't need to do
+    /// anything explicit here — the App's PairDeviceAsync already flipped
+    /// State.HasToken=true, which:
+    ///   - hides this button (DataTrigger on HasToken=False → Collapsed)
+    ///   - shows the "Gerät neu koppeln" button (BoolToVis on HasToken)
+    ///   - flips the VERBINDUNG card's Token row to "✓ Gepaart"
+    ///
+    /// On cancel/error the dialog closes without state changes; the
+    /// button stays available for retry.
+    ///
+    /// Re-entrancy: ShowDialog blocks until the dialog closes, so the
+    /// button can't be clicked twice in flight even without an explicit
+    /// guard. We don't need IsEnabled gymnastics.
+    /// </summary>
+    private void OnPairClick(object sender, RoutedEventArgs e)
+    {
+        var dialog = new PairingDialog
+        {
+            Owner = this,
+        };
+        dialog.ShowDialog();
+    }
+
+    /// <summary>
     /// Re-pair button handler (option #3). Confirms with the user that
     /// they really want to delete the stored token, then delegates to
     /// <see cref="Models.AcarsClientService.UnpairAsync"/>.

@@ -441,6 +441,75 @@
                                 </TextBlock.Style>
                             </TextBlock>
                         </Grid>
+
+                        <!--
+                            Pairing-button (in-app device-pairing). Visible
+                            only when HasToken=False — once the user is
+                            paired the button disappears entirely (no
+                            layout gap), and the "Gerät neu koppeln"-
+                            button further down handles the inverse
+                            (visible only when HasToken=True). Together
+                            the two buttons cover both directions of the
+                            pairing lifecycle without ever showing both
+                            at once.
+
+                            AccentBlue fill matches the install-update
+                            button — both are "primary action when
+                            visible" affordances. Click handler in code-
+                            behind opens PairingDialog as a modal owned
+                            by this window so it gets the right z-order
+                            and sits centred over MainWindow.
+                        -->
+                        <Button x:Name="PairButton"
+                                Click="OnPairClick"
+                                HorizontalAlignment="Left"
+                                Margin="0,12,0,0"
+                                Padding="14,6"
+                                Background="{StaticResource AccentBlue}"
+                                Foreground="{StaticResource BgPrimary}"
+                                FontSize="12"
+                                FontWeight="SemiBold"
+                                BorderThickness="0"
+                                Cursor="Hand"
+                                Content="Gerät pairen…"
+                                ToolTip="Öffnet einen Dialog, in dem du den 9-stelligen Pairing-Code aus vam.kevindrack.de/settings eingibst.">
+                            <Button.Template>
+                                <ControlTemplate TargetType="Button">
+                                    <Border Background="{TemplateBinding Background}"
+                                            CornerRadius="4"
+                                            Padding="{TemplateBinding Padding}">
+                                        <ContentPresenter HorizontalAlignment="Center"
+                                                          VerticalAlignment="Center"
+                                                          TextElement.Foreground="{TemplateBinding Foreground}" />
+                                    </Border>
+                                </ControlTemplate>
+                            </Button.Template>
+                            <Button.Style>
+                                <Style TargetType="Button">
+                                    <!--
+                                        Default Collapsed (so paired-state
+                                        users never see the button), flipped
+                                        to Visible when HasToken=False. We
+                                        invert the trigger relative to the
+                                        existing "Gerät neu koppeln" button
+                                        further down, which uses the BoolToVis
+                                        converter directly (HasToken=true
+                                        → visible). No need for an inverted
+                                        converter — DataTrigger handles the
+                                        polarity flip cleanly.
+                                    -->
+                                    <Setter Property="Visibility" Value="Collapsed" />
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding HasToken}" Value="False">
+                                            <Setter Property="Visibility" Value="Visible" />
+                                        </DataTrigger>
+                                        <Trigger Property="IsMouseOver" Value="True">
+                                            <Setter Property="Opacity" Value="0.85" />
+                                        </Trigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </Button.Style>
+                        </Button>
                     </StackPanel>
                 </Border>
 

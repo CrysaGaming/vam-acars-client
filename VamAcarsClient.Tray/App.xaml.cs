@@ -27,9 +27,10 @@ namespace VamAcarsClient.Tray;
 ///   until <see cref="OnExitClick"/> triggers Application.Current.
 ///   Shutdown(), which fires OnExit.
 ///
-/// What this file does NOT do (yet, deferred to a later session):
-///   - Show pairing UI inside the window. For now the user pairs via
-///     the Cli in Mode 1; the tray-app reads the same TokenStore.
+/// Pairing flow: in-app via <see cref="PairingDialog"/>, opened from
+/// MainWindow's "Pairen…" button when HasToken=false. The CLI's Mode 1
+/// pairing is still available for headless / dev-console workflows but
+/// is no longer the only entry point.
 /// </summary>
 public partial class App : Application
 {
@@ -742,6 +743,101 @@ public partial class App : Application
         {
             State.IsProbingSim = false;
         }
+    }
+
+    /// <summary>
+    /// In-app device pairing. Wraps <see cref="PairingService.RedeemAsync"/>
+    /// + <see cref="TokenStore.Save"/> + <see cref="AcarsClientState.HasToken"/>
+    /// flip into a single call so <see cref="PairingDialog"/> talks to
+    /// one method on the App rather than reaching into <c>_http</c>,
+    /// <c>_tokenStore</c>, and <c>State</c> separately.
+    ///
+    /// Returns the raw <see cref="PairingResult"/> so the dialog can
+    /// distinguish success from validation-failure (server-rejected code
+    /// → IsSuccess=false + ErrorMessage) and surface the appropriate
+    /// message. Transport failures bubble out as
+    /// <see cref="PairingTransportException"/> — the dialog handles those
+    /// in a separate catch.
+    ///
+    /// On success we:
+    ///   1. Persist the token via <see cref="TokenStore.Save"/> (DPAPI-
+    ///      encrypted, %LOCALAPPDATA%\VamAcarsClient\token.dat).
+    ///   2. Flip <see cref="AcarsClientState.HasToken"/>=true so the
+    ///      MainWindow's VERBINDUNG card immediately re-renders the
+    ///      "✓ Gepaart" badge + the "Pairen…" button hides itself.
+    ///   3. Update <see cref="AcarsClientState.StatusMessage"/> with the
+    ///      friendly "Gepaart als {displayName}" cue so the footer-strip
+    ///      confirms the action took effect.
+    ///
+    /// Token-store write failure is logged but NOT surfaced as an
+    /// IsSuccess=false — the server-side pair already happened, the
+    /// token exists, just couldn't be persisted. Returning Success here
+    /// would be misleading; we return a synthetic Failure with a hint
+    /// so the user can retry, and we DON'T flip HasToken. The next
+    /// pairing attempt re-redeems a fresh code (the old code is
+    /// consumed-server-side regardless of our IO outcome — by design,
+    /// codes are one-shot). User just generates another code.
+    ///
+    /// PairingService is constructed per-call (stateless wrapper around
+    /// HttpClient), so we don't keep a long-lived field for it.
+    /// </summary>
+    public async Task<PairingResult> PairDeviceAsync(string code)
+    {
+        if (_http is null || _tokenStore is null)
+        {
+            // Defensive — should never trip post-OnStartup. Surface as
+            // a user-visible failure rather than a NullReferenceException.
+            _logger?.LogWarning("PairDeviceAsync called before OnStartup completed");
+            return PairingResult.Failure("App noch nicht initialisiert. Bitte kurz warten und erneut versuchen.");
+        }
+
+        var pairing = new PairingService(_http);
+        PairingResult result;
+        try
+        {
+            result = await pairing.RedeemAsync(code);
+        }
+        catch (PairingTransportException ex)
+        {
+            _logger?.LogWarning(ex, "PairDeviceAsync transport failure");
+            // Bubble up so the dialog's catch-block can render a
+            // distinct "Verbindungsfehler" message instead of treating
+            // it like a validation rejection.
+            throw;
+        }
+
+        if (!result.IsSuccess)
+        {
+            _logger?.LogInformation(
+                "PairDeviceAsync rejected by server: {Error}",
+                result.ErrorMessage);
+            return result;
+        }
+
+        // Server-side pair succeeded — persist + flip state.
+        try
+        {
+            _tokenStore.Save(result.Token!);
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogError(ex,
+                "PairDeviceAsync: server accepted but TokenStore.Save failed — user must re-pair with a fresh code");
+            // Note: don't flip HasToken=true here. We don't have a usable
+            // persistent token. User regenerates a fresh code (old one is
+            // already consumed) and tries again.
+            return PairingResult.Failure(
+                "Pairing erfolgreich, aber Token konnte nicht gespeichert werden. "
+                + "Bitte neuen Code generieren und erneut versuchen.");
+        }
+
+        State.HasToken = true;
+        State.StatusMessage = $"Gepaart als {result.DisplayName ?? "—"}.";
+        _logger?.LogInformation(
+            "PairDeviceAsync succeeded: displayName={DisplayName}",
+            result.DisplayName);
+
+        return result;
     }
 
     /// <summary>
