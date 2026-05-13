@@ -829,6 +829,35 @@ public sealed class HeartbeatService : IDisposable
                 N1Avg = t.EngineN1Avg,
                 FuelTotalKg = (int)Math.Round(Math.Max(0, t.FuelTotalKg)),
             },
+
+            // ─── Environment (Welle B — B1) ─────────────────────────
+            // Sim-side weather snapshot. Server's heartbeat schema has
+            // accepted windSpeedKts/windDirection/oatCelsius since
+            // before Welle B started (pre-existing optional environment
+            // block); ambientPressureMb arrives in Welle B Phase 2 along
+            // with the DB column. Sending pressure now is safe because
+            // the server's zod schema strips unknown fields by default
+            // (no .strict() call), so a pre-B2 server just ignores it.
+            //
+            // Type-conversions:
+            //   - SimConnect returns FLOAT64; server expects int for all
+            //     three of windSpeedKts/windDirection/oatCelsius (see
+            //     route.ts zod schema). Math.Round truncates the fp noise.
+            //   - WindSpeed clamped >= 0 because the SimVar can briefly
+            //     report tiny negatives during scenery-load transitions.
+            //   - WindDirection normalized to [0, 360) using the same
+            //     pattern as HeadingTrue — the SimVar occasionally reports
+            //     -0.0001 or 360.0001 at the wrap-around point.
+            //   - Pressure passes through as a double (mb has one decimal
+            //     of useful precision; rounding to int would lose that).
+            //     Server-side phase 2 will accept it as float.
+            Environment = new HeartbeatEnvironment
+            {
+                WindSpeedKts = (int)Math.Round(Math.Max(0, t.AmbientWindVelocityKts)),
+                WindDirection = (int)Math.Round(NormalizeHeading(t.AmbientWindDirectionDeg)),
+                OatCelsius = (int)Math.Round(t.AmbientTemperatureCelsius),
+                AmbientPressureMb = t.AmbientPressureMb,
+            },
         };
     }
 
@@ -896,6 +925,17 @@ public sealed class HeartbeatRequest
     [JsonPropertyName("speed")] public required HeartbeatSpeed Speed { get; init; }
     [JsonPropertyName("state")] public required HeartbeatState State { get; init; }
     [JsonPropertyName("engine")] public HeartbeatEngine? Engine { get; init; }
+
+    /// <summary>
+    /// Welle B — B1. Sim-side weather snapshot (wind/temp/pressure)
+    /// for the PIREP weather-comparison feature. Server-side schema
+    /// has accepted this block since before Welle B (it was added
+    /// pre-emptively in the M3 era as an optional field); we just
+    /// hadn't been populating it from the client side. AmbientPressureMb
+    /// is the new addition that lands together with Welle B Phase 2's
+    /// DB column.
+    /// </summary>
+    [JsonPropertyName("environment")] public HeartbeatEnvironment? Environment { get; init; }
 }
 
 public sealed class HeartbeatFlight
@@ -947,6 +987,36 @@ public sealed class HeartbeatEngine
 {
     [JsonPropertyName("n1Avg")] public double? N1Avg { get; init; }
     [JsonPropertyName("fuelTotalKg")] public int? FuelTotalKg { get; init; }
+}
+
+/// <summary>
+/// Welle B — B1. Sim-side weather snapshot for the PIREP weather-
+/// comparison feature. All fields optional (the server's zod schema
+/// uses .optional() on each), so a heartbeat without environment
+/// data still validates — protects against the brief window between
+/// SimConnect's Connect handshake and the first telemetry-reply
+/// where the SimVars haven't been populated yet.
+///
+/// Field-name mapping (route.ts zod schema):
+///   - windSpeedKts  → server windSpeedKts  (int, nonnegative)
+///   - windDirection → server windDirection (int, 0-360)
+///   - oatCelsius    → server oatCelsius    (int, signed)
+///   - ambientPressureMb → server ambientPressureMb (added in
+///     Welle B Phase 2; pre-Phase-2 servers ignore it because zod
+///     strips unknown fields by default — no .strict() call)
+///
+/// Pressure is sent as a double because mb resolves to one decimal
+/// place naturally and METAR's QNH-group reports e.g. 1013.2. Rounding
+/// to int would lose the precision that makes the Weather Comparison
+/// section informative (Sim 1013 vs Real 1014 looks identical even
+/// when actual delta is 1013.6 vs 1014.4 — a meaningful 0.8 mb gap).
+/// </summary>
+public sealed class HeartbeatEnvironment
+{
+    [JsonPropertyName("windSpeedKts")] public int? WindSpeedKts { get; init; }
+    [JsonPropertyName("windDirection")] public int? WindDirection { get; init; }
+    [JsonPropertyName("oatCelsius")] public int? OatCelsius { get; init; }
+    [JsonPropertyName("ambientPressureMb")] public double? AmbientPressureMb { get; init; }
 }
 
 public sealed class HeartbeatResponse

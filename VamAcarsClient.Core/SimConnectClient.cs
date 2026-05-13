@@ -198,6 +198,30 @@ public sealed class SimConnectClient : IDisposable
         Add("AUTOPILOT MASTER", "bool");
         Add("AUTOPILOT ALTITUDE LOCK", "bool");
 
+        // ─── Environment (Welle B — B1) ────────────────────────────
+        // Order matches the AmbientWind*/Temperature/Pressure fields in
+        // SimTelemetry — see the comment block there for the rationale.
+        // Units chosen to align with the server's heartbeat zod schema
+        // (knots/degrees/celsius are sent as ints; pressure becomes
+        // available in Welle B Phase 2 when the server-side schema +
+        // DB column ambientPressureMb land).
+        //
+        // SimConnect SimVar reference (simconnect-data-catalog.md §7):
+        //   - AMBIENT WIND VELOCITY (knots, FLOAT64)
+        //   - AMBIENT WIND DIRECTION (degrees true, FLOAT64)
+        //   - AMBIENT TEMPERATURE (celsius, FLOAT64) — OAT, can be deeply
+        //     negative at cruise (~-55°C @ FL370)
+        //   - BAROMETER PRESSURE (millibars, FLOAT64) — sea-level QNH.
+        //     We deliberately do NOT use AMBIENT PRESSURE because that
+        //     SimVar reports altitude-corrected static pressure in inHg
+        //     (despite the misleading name), which would force a unit-
+        //     conversion + altitude-compensation that BAROMETER PRESSURE
+        //     already does for us. Compares apples to apples vs METAR Q.
+        Add("AMBIENT WIND VELOCITY", "knots");
+        Add("AMBIENT WIND DIRECTION", "degrees");
+        Add("AMBIENT TEMPERATURE", "celsius");
+        Add("BAROMETER PRESSURE", "millibars");
+
         // String SimVars use a different overload — explicit STRING32
         // datatype, no units string. SimConnect treats strings as fixed-
         // length byte buffers; the wrapper marshalls them into our

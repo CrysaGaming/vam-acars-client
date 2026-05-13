@@ -55,6 +55,39 @@ public struct SimTelemetry
     public double AutopilotMaster;
     public double AutopilotAltLock;
 
+    // ─── Environment & Wind (Welle B — B1) ─────────────────────
+    // Sim-side weather snapshot. Server pairs this with a real-METAR
+    // fetch at PIREP-time to render the "Weather Comparison" section
+    // on the analysis page (Sim 270/65 OAT -54°C vs Real 280/72 -56°C).
+    //
+    // Field order is binding — must match the AddToDataDefinition calls
+    // in SimConnectClient.RegisterTelemetryDefinition exactly. New fields
+    // appended here MUST be appended there in the same sequence (and
+    // vice-versa), or the FLOAT64 slots silently shift and downstream
+    // values become garbage.
+    //
+    // Units chosen to match the server's heartbeat zod schema directly,
+    // so HeartbeatService.BuildHeartbeat can pass them through with at
+    // most a Math.Round (server requires int for all three of these):
+    //   - WindVelocity in knots (server: windSpeedKts, nonnegative int)
+    //   - WindDirection in degrees true (server: windDirection, 0-360 int)
+    //   - Temperature in Celsius (server: oatCelsius, signed int — can
+    //     be deeply negative at cruise altitude)
+    //   - Pressure in millibars (server-side field arrives in Welle B
+    //     Phase 2 — DB column ambientPressureMb. Sending now is safe:
+    //     zod strips unknown fields by default, so a pre-B2 server just
+    //     ignores it.)
+    //
+    // Why BAROMETER PRESSURE (millibars) over AMBIENT PRESSURE (inHg):
+    // AMBIENT PRESSURE in SimConnect is actually inches-of-mercury
+    // despite the name suggesting absolute pressure; BAROMETER PRESSURE
+    // is the standard sea-level QNH in mb that matches METAR's Q-group
+    // directly. Comparing apples to apples in the UI later.
+    public double AmbientWindVelocityKts;
+    public double AmbientWindDirectionDeg;
+    public double AmbientTemperatureCelsius;
+    public double AmbientPressureMb;
+
     // ─── Aircraft identity (STRING32) ──────────────────────────
     // ATC MODEL = ICAO type designator (e.g. "C172", "A20N", "B738").
     // ATC ID    = aircraft registration (e.g. "D-EXXX", "N12345").
