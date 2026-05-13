@@ -633,6 +633,228 @@ public class AcarsClientState : INotifyPropertyChanged
         return raw;
     }
 
+    // ─── Active booking + aircraft substitution (Welle B / B4) ────────
+    //
+    // The pre-connect flow now fetches the user's active booking via
+    // <see cref="VamAcarsClient.Core.ActiveBookingService"/> and surfaces
+    // it in the FLUG-KONTEXT card. If the booked aircraft type differs
+    // from the sim-loaded one (DetectedAircraftType), an
+    // AircraftSubstitutionDialog asks the pilot to disposition the
+    // mismatch with one of three choices:
+    //
+    //   1. "intentional"  - pilot flies the wrong plane on purpose
+    //                       (livery issue, training, mood). Optional
+    //                       free-text reason. PIREP shows the choice.
+    //   2. "wrongLoaded"  - pilot intends to fix the loaded aircraft
+    //                       (close MSFS, load the right one). Connect
+    //                       is aborted; no heartbeat is sent. This
+    //                       option doesn't reach the server — the
+    //                       client-side abort is the entire signal.
+    //   3. "wrongBooking" - pilot believes the booking is wrong and
+    //                       wants admin to reconcile. PIREP is filed
+    //                       with the flown aircraft and a flag is
+    //                       raised for admin review.
+    //
+    // # State separation
+    //
+    // ActiveBooking* properties mirror the server's response: stable
+    // across the session, refreshed on each /api/acars/active-booking
+    // fetch. Pending* properties are the one-shot disposition staged
+    // by the dialog: set on user-confirm, sent on the first heartbeat
+    // after Connect, cleared by the tray after the heartbeat lands
+    // so subsequent heartbeats don't re-send (the server's persistence
+    // is conditional — absent block leaves the row untouched, but
+    // re-sending would be wasted bytes anyway).
+    //
+    // Pending fields are deliberately strings rather than a custom
+    // record-type so the heartbeat-builder can read them with
+    // straightforward null-checks. A struct would be slightly tighter
+    // but the four-field shape is small enough not to matter, and
+    // matching the existing AcarsClientState pattern (everything is
+    // bindable INPC properties) keeps the binding story uniform.
+
+    private string? _activeBookingId;
+    /// <summary>
+    /// Booking ID of the user's currently-active booking (states
+    /// Created | SimBriefDispatched | InProgress), or null if no
+    /// active booking. Refreshed by
+    /// <see cref="VamAcarsClient.Tray.Models.AcarsClientService.FetchActiveBookingAsync"/>.
+    /// </summary>
+    public string? ActiveBookingId
+    {
+        get => _activeBookingId;
+        set => SetField(ref _activeBookingId, value);
+    }
+
+    private string? _activeBookingFlightNumber;
+    /// <summary>Flight number from the booking's route, e.g. "NGN901".</summary>
+    public string? ActiveBookingFlightNumber
+    {
+        get => _activeBookingFlightNumber;
+        set => SetField(ref _activeBookingFlightNumber, value);
+    }
+
+    private string? _activeBookingDepartureIcao;
+    public string? ActiveBookingDepartureIcao
+    {
+        get => _activeBookingDepartureIcao;
+        set => SetField(ref _activeBookingDepartureIcao, value);
+    }
+
+    private string? _activeBookingArrivalIcao;
+    public string? ActiveBookingArrivalIcao
+    {
+        get => _activeBookingArrivalIcao;
+        set => SetField(ref _activeBookingArrivalIcao, value);
+    }
+
+    private string? _activeBookingAircraftType;
+    /// <summary>
+    /// ICAO type designator from the booking's route.aircraft (e.g.
+    /// "A20N"). Null when the booking's route has no specific aircraft
+    /// assigned (charter, type-flexible) — in that case the mismatch
+    /// dialog is skipped because there's nothing to compare against.
+    /// </summary>
+    public string? ActiveBookingAircraftType
+    {
+        get => _activeBookingAircraftType;
+        set => SetField(ref _activeBookingAircraftType, value);
+    }
+
+    private string? _activeBookingAircraftRegistration;
+    /// <summary>
+    /// Tail number of the booked aircraft. Shown in the substitution
+    /// dialog so the pilot can confirm which physical airframe was
+    /// booked. Null when ActiveBookingAircraftType is null.
+    /// </summary>
+    public string? ActiveBookingAircraftRegistration
+    {
+        get => _activeBookingAircraftRegistration;
+        set => SetField(ref _activeBookingAircraftRegistration, value);
+    }
+
+    private bool _isFetchingActiveBooking;
+    /// <summary>
+    /// True while the /api/acars/active-booking fetch is in flight.
+    /// Drives a "lädt Buchung…" hint in the FLUG-KONTEXT card so the
+    /// user sees the pre-connect probe is doing something. Flipped
+    /// true at the start of FetchActiveBookingAsync, false in finally.
+    /// </summary>
+    public bool IsFetchingActiveBooking
+    {
+        get => _isFetchingActiveBooking;
+        set => SetField(ref _isFetchingActiveBooking, value);
+    }
+
+    // ─── Pending aircraft-substitution disposition ───────────────────
+    //
+    // Set by AircraftSubstitutionDialog when the user confirms a
+    // disposition. Read by the heartbeat-builder and serialized into
+    // the heartbeat's `aircraftSubstitution` block on the FIRST
+    // heartbeat after Connect. Cleared by the tray once that heartbeat
+    // has been acknowledged (HeartbeatSent fires) so subsequent
+    // heartbeats omit the block.
+    //
+    // The four fields are nominally a record but stored as separate
+    // properties to match the existing INPC binding story — XAML can
+    // bind individual fields if a future "disposition pending" hint
+    // wants to display the staged values before they're sent.
+
+    private string? _pendingSubstitutionIntent;
+    /// <summary>
+    /// Pending disposition intent: "intentional" or "wrongBooking",
+    /// or null if no disposition is currently staged. The
+    /// "wrongLoaded" path never reaches this field — it aborts the
+    /// connect flow client-side without persisting anything.
+    /// </summary>
+    public string? PendingSubstitutionIntent
+    {
+        get => _pendingSubstitutionIntent;
+        set => SetField(ref _pendingSubstitutionIntent, value);
+    }
+
+    private string? _pendingSubstitutionBookedType;
+    /// <summary>
+    /// Snapshot of the booked ICAO aircraft type at dialog-confirm
+    /// time. Sent verbatim to the server so admin review sees exactly
+    /// what the pilot was comparing.
+    /// </summary>
+    public string? PendingSubstitutionBookedType
+    {
+        get => _pendingSubstitutionBookedType;
+        set => SetField(ref _pendingSubstitutionBookedType, value);
+    }
+
+    private string? _pendingSubstitutionFlownType;
+    /// <summary>
+    /// Snapshot of the sim-loaded ICAO aircraft type at dialog-confirm
+    /// time. Sent verbatim to the server.
+    /// </summary>
+    public string? PendingSubstitutionFlownType
+    {
+        get => _pendingSubstitutionFlownType;
+        set => SetField(ref _pendingSubstitutionFlownType, value);
+    }
+
+    private string? _pendingSubstitutionReason;
+    /// <summary>
+    /// Optional free-text reason the pilot supplied when choosing
+    /// "intentional". Null for "wrongBooking" (no reason field shown)
+    /// and for unset state. Max 200 chars (enforced both client- and
+    /// server-side).
+    /// </summary>
+    public string? PendingSubstitutionReason
+    {
+        get => _pendingSubstitutionReason;
+        set => SetField(ref _pendingSubstitutionReason, value);
+    }
+
+    /// <summary>
+    /// True when there's a pending disposition staged for the next
+    /// heartbeat. Computed convenience for UI bindings (e.g. a
+    /// "Substitution wird gesendet" hint) and for the heartbeat-
+    /// builder's gate check.
+    /// </summary>
+    public bool HasPendingSubstitution =>
+        !string.IsNullOrWhiteSpace(_pendingSubstitutionIntent);
+
+    /// <summary>
+    /// Atomically clear all four pending-substitution fields. Called
+    /// from the HeartbeatSent path after the first heartbeat with the
+    /// block has been acknowledged. Single method rather than four
+    /// separate setter calls so the clear is obviously atomic from
+    /// the caller's perspective and the four PropertyChanged events
+    /// fire in a tight burst.
+    /// </summary>
+    public void ClearPendingSubstitution()
+    {
+        PendingSubstitutionIntent = null;
+        PendingSubstitutionBookedType = null;
+        PendingSubstitutionFlownType = null;
+        PendingSubstitutionReason = null;
+        // HasPendingSubstitution is a computed property derived from
+        // _pendingSubstitutionIntent — its PropertyChanged needs an
+        // explicit raise since SetField only fires for the underlying
+        // field's property name.
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(HasPendingSubstitution)));
+    }
+
+    /// <summary>
+    /// Atomically clear all active-booking fields. Called when the
+    /// user disconnects so a fresh connect cycle starts clean. Doesn't
+    /// touch the Pending* fields — those have their own lifecycle
+    /// (cleared on heartbeat-sent, not on disconnect).
+    /// </summary>
+    public void ClearActiveBooking()
+    {
+        ActiveBookingId = null;
+        ActiveBookingFlightNumber = null;
+        ActiveBookingDepartureIcao = null;
+        ActiveBookingArrivalIcao = null;
+        ActiveBookingAircraftType = null;
+        ActiveBookingAircraftRegistration = null;
+    }
+
     // ─── Crash-recovery (option #13) ─────────────────────────────────
     //
     // Non-null when App.OnStartup found a SessionMarker on disk —

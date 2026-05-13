@@ -767,6 +767,138 @@ public sealed class AcarsClientService : IDisposable
     }
 
     /// <summary>
+    /// Welle B / B4 phase 2 — fetch the user's currently-active booking
+    /// via <see cref="ActiveBookingService"/> and project the result onto
+    /// <see cref="AcarsClientState"/>'s ActiveBooking* properties. Returns
+    /// true on success (including the "no active booking" case), false on
+    /// any failure path (no token, 401, transport-error).
+    ///
+    /// Companion to <see cref="ProbeAircraftAsync"/> for the pre-connect
+    /// flow: the tray surfaces a booking-aware mismatch dialog when the
+    /// booked aircraft type and the sim-loaded aircraft differ. This
+    /// method is the data-fetch half; the comparison + dialog live in
+    /// MainWindow (B4 P2B).
+    ///
+    /// # Error semantics
+    ///
+    /// - No token in store → returns false, logs a warning, leaves state
+    ///   untouched. Caller should not have invoked us in this state
+    ///   (the pairing-pill gates the UI button), but we defend
+    ///   gracefully anyway.
+    /// - 401 from server → returns false, clears ActiveBooking* state.
+    ///   We deliberately do NOT trigger the re-pair flow here — the
+    ///   heartbeat path owns that, and a 401 on this pre-connect probe
+    ///   is rare enough that we'd rather surface "couldn't load booking,
+    ///   try Connect anyway" than launch a re-pair flow off a side query.
+    /// - Transport failure (network, 5xx, timeout) → returns false, logs
+    ///   the exception, leaves state untouched. Caller is free to try
+    ///   Connect anyway — the heartbeat path has its own retry/queue
+    ///   plumbing that handles network sickness.
+    /// - 2xx with booking=null → returns true, clears ActiveBooking*
+    ///   state. This is a NORMAL state (free flight, no booking).
+    /// - 2xx with booking populated → returns true, projects the
+    ///   response onto ActiveBooking* properties.
+    ///
+    /// # Threading
+    ///
+    /// HTTP call runs on the calling thread (HttpClient is async-ready);
+    /// state mutations marshal via <see cref="SetStateAsync"/> so WPF
+    /// bindings see the updates on the UI dispatcher. The
+    /// IsFetchingActiveBooking flag is set true before the await and
+    /// false in finally, so the UI's "lädt Buchung…" hint correctly
+    /// brackets the actual network IO.
+    ///
+    /// # Why this method lives on AcarsClientService
+    ///
+    /// The Core ActiveBookingService is the bare HTTP/JSON binding —
+    /// re-usable from Cli, future bot integrations, tests. This wrapper
+    /// adds WPF concerns (state projection, UI thread, INPC plumbing).
+    /// Same pattern as ProbeAircraftAsync wrapping SimConnectClient.
+    /// </summary>
+    public async Task<bool> FetchActiveBookingAsync(CancellationToken ct = default)
+    {
+        var token = _tokenStore.TryLoad();
+        if (token is null)
+        {
+            _logger.LogWarning("FetchActiveBookingAsync: no token in store — skipping");
+            return false;
+        }
+
+        await SetStateAsync(s => s.IsFetchingActiveBooking = true);
+
+        try
+        {
+            var svc = new ActiveBookingService(_http);
+            var response = await svc.FetchAsync(token, ct);
+
+            // 401 → svc returns null. Clear any stale ActiveBooking
+            // state so the UI doesn't keep showing a booking the
+            // server no longer agrees we own. We don't trigger re-pair
+            // here — see method docstring for rationale.
+            if (response is null)
+            {
+                _logger.LogWarning(
+                    "FetchActiveBookingAsync: token rejected (401) — clearing booking state");
+                await SetStateAsync(s => s.ClearActiveBooking());
+                return false;
+            }
+
+            // Project onto state inside the dispatcher so all six setters
+            // fire on the UI thread in one go. null-booking is a valid
+            // outcome (free flight) — we clear ActiveBooking* fields so
+            // the FLUG-KONTEXT card shows no booking-row.
+            var booking = response.Booking;
+            await SetStateAsync(s =>
+            {
+                if (booking is null)
+                {
+                    s.ClearActiveBooking();
+                    return;
+                }
+                s.ActiveBookingId = booking.Id;
+                s.ActiveBookingFlightNumber = booking.FlightNumber;
+                s.ActiveBookingDepartureIcao = booking.DepartureIcao;
+                s.ActiveBookingArrivalIcao = booking.ArrivalIcao;
+                s.ActiveBookingAircraftType = booking.Aircraft?.Type;
+                s.ActiveBookingAircraftRegistration = booking.Aircraft?.Registration;
+            });
+
+            if (booking is null)
+            {
+                _logger.LogInformation("FetchActiveBookingAsync: no active booking (free flight)");
+            }
+            else
+            {
+                _logger.LogInformation(
+                    "FetchActiveBookingAsync: loaded booking {Id} ({Flight} {Dep}→{Arr}, aircraft={Type}/{Reg})",
+                    booking.Id, booking.FlightNumber, booking.DepartureIcao, booking.ArrivalIcao,
+                    booking.Aircraft?.Type ?? "(none)", booking.Aircraft?.Registration ?? "(none)");
+            }
+            return true;
+        }
+        catch (OperationCanceledException)
+        {
+            // Caller-initiated cancellation (e.g., user clicked Verbinden
+            // without waiting for the booking-probe). Not an error.
+            _logger.LogDebug("FetchActiveBookingAsync: cancelled by caller");
+            return false;
+        }
+        catch (Exception ex)
+        {
+            // Transport / parse failure. Leave state untouched — a stale
+            // ActiveBooking is more useful than a cleared one if the
+            // server just briefly hiccupped; the next pre-connect probe
+            // will refresh it. Caller can still proceed with Connect.
+            _logger.LogWarning(ex, "FetchActiveBookingAsync failed");
+            return false;
+        }
+        finally
+        {
+            await SetStateAsync(s => s.IsFetchingActiveBooking = false);
+        }
+    }
+
+    /// <summary>
     /// User-initiated re-pair. Tears down any active session, deletes the
     /// stored DPAPI-encrypted token, and resets HasToken so the UI shows
     /// "Nicht gepaart". The user then runs the CLI's pair command (or a
