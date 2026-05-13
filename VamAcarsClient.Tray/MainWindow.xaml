@@ -1449,6 +1449,58 @@
                         </Button>
 
                         <!--
+                            Changelog button (Welle A — option A4).
+                            Opens ChangelogDialog which pulls release
+                            notes from GitHub. Subdued BgSecondary
+                            framing (same as "Auf Updates prüfen") —
+                            both are release-related secondary
+                            affordances; the bright AccentBlue is
+                            reserved for connect / pair / install which
+                            are primary actions.
+
+                            No Visibility gating — the changelog is
+                            useful regardless of pairing or session
+                            state. Pilots may want to read what's new
+                            before they pair or after they disconnect.
+                        -->
+                        <Button x:Name="ShowChangelogButton"
+                                Click="OnShowChangelogClick"
+                                HorizontalAlignment="Left"
+                                Margin="0,8,0,0"
+                                Padding="14,6"
+                                Background="{StaticResource BgSecondary}"
+                                Foreground="{StaticResource TextPrimary}"
+                                FontSize="12"
+                                BorderThickness="1"
+                                BorderBrush="{StaticResource BorderMuted}"
+                                Cursor="Hand"
+                                Content="Changelog anzeigen"
+                                ToolTip="Zeigt die Release-Notes der letzten Versionen aus GitHub.">
+                            <Button.Template>
+                                <ControlTemplate TargetType="Button">
+                                    <Border Background="{TemplateBinding Background}"
+                                            BorderBrush="{TemplateBinding BorderBrush}"
+                                            BorderThickness="{TemplateBinding BorderThickness}"
+                                            CornerRadius="4"
+                                            Padding="{TemplateBinding Padding}">
+                                        <ContentPresenter HorizontalAlignment="Center"
+                                                          VerticalAlignment="Center"
+                                                          TextElement.Foreground="{TemplateBinding Foreground}" />
+                                    </Border>
+                                </ControlTemplate>
+                            </Button.Template>
+                            <Button.Style>
+                                <Style TargetType="Button">
+                                    <Style.Triggers>
+                                        <Trigger Property="IsMouseOver" Value="True">
+                                            <Setter Property="Background" Value="{StaticResource BgPrimary}" />
+                                        </Trigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </Button.Style>
+                        </Button>
+
+                        <!--
                             Token-rotate button (Welle A — option A3).
                             Routine workflow affordance, distinct from
                             the AccentRed "Gerät neu koppeln" button

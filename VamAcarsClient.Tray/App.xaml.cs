@@ -161,6 +161,33 @@ public partial class App : Application
     public AcarsClientService? Service => _acarsService;
 
     /// <summary>
+    /// Factory for the Welle A — A4 changelog viewer. Pulls in the
+    /// App-owned <see cref="HttpClient"/> (shared connection pool with
+    /// the heartbeat path) and a logger scoped to the
+    /// <see cref="ChangelogFetcher"/> category.
+    ///
+    /// Wrapped as a method rather than exposing <c>_http</c> +
+    /// <c>_loggerFactory</c> directly so the dialog has one entry-point
+    /// to use and the App keeps the dependencies private. Cheap to call
+    /// (no I/O); the actual GitHub fetch only happens when the dialog
+    /// calls <see cref="ChangelogFetcher.FetchAsync"/>.
+    ///
+    /// Throws <see cref="InvalidOperationException"/> if called before
+    /// OnStartup completes (which would mean an injected race during
+    /// startup — should never happen via the normal user-driven
+    /// "Changelog anzeigen" click path).
+    /// </summary>
+    public ChangelogFetcher CreateChangelogFetcher()
+    {
+        if (_http is null || _loggerFactory is null)
+        {
+            throw new InvalidOperationException(
+                "App not yet initialized — CreateChangelogFetcher called before OnStartup completed.");
+        }
+        return new ChangelogFetcher(_http, _loggerFactory.CreateLogger<ChangelogFetcher>());
+    }
+
+    /// <summary>
     /// Status → tooltip-suffix map for the tray icon. The tray icon
     /// itself stays at the cyan brand colour for the lifetime of the
     /// app (loaded once via XAML's <c>IconSource</c> from

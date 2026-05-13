@@ -315,6 +315,31 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
+    /// "Changelog anzeigen" button handler (Welle A — option A4).
+    /// Opens <see cref="ChangelogDialog"/> as a modal owned by this
+    /// MainWindow. The dialog itself fires-and-forgets a GitHub fetch
+    /// in its constructor; we just instantiate and show.
+    ///
+    /// Why modal: the changelog is a single read-only flow. A modal
+    /// blocks the rest of the UI which keeps the user focused on
+    /// reading the release notes; closing returns them exactly where
+    /// they were. A non-modal would create the question "wait, where
+    /// did the changelog window go?" if it gets shuffled behind
+    /// MainWindow.
+    ///
+    /// Owner=this so the dialog sits centred over MainWindow and
+    /// follows it through z-order and minimize/restore.
+    /// </summary>
+    private void OnShowChangelogClick(object sender, RoutedEventArgs e)
+    {
+        var dialog = new ChangelogDialog
+        {
+            Owner = this,
+        };
+        dialog.ShowDialog();
+    }
+
+    /// <summary>
     /// "Gerät pairen…" button handler. Opens <see cref="PairingDialog"/>
     /// as a modal window owned by this MainWindow, so it sits centred
     /// and blocks input until the user finishes (or cancels) pairing.

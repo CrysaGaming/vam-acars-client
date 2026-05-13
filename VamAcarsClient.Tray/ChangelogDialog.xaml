@@ -1,0 +1,272 @@
+<Window x:Class="VamAcarsClient.Tray.ChangelogDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:core="clr-namespace:VamAcarsClient.Core;assembly=VamAcarsClient.Core"
+        mc:Ignorable="d"
+        Title="Changelog — VAM ACARS Client"
+        Width="640"
+        Height="720"
+        ResizeMode="CanResize"
+        WindowStartupLocation="CenterOwner"
+        ShowInTaskbar="False"
+        Background="#1c1c23"
+        Foreground="#e8e8ee"
+        FontFamily="Segoe UI">
+
+    <!--
+        Changelog dialog (Welle A — option A4).
+
+        Pulls the most recent release notes from
+        https://api.github.com/repos/CrysaGaming/vam-acars-client/releases
+        via ChangelogFetcher and renders them as a scrollable list of
+        version entries — newest first, body shown as wrapped plain
+        text below each version header.
+
+        Why plain text instead of rendered markdown: the bodies use
+        very lightweight markdown (mostly bullet lists and inline
+        bold). A full markdown renderer (Markdig, etc.) would balloon
+        the binary for a marginal visual gain. v1 keeps the body as a
+        monospaced TextBlock — pilots reading "what changed in 0.2.0"
+        get the substance even without bold/italic rendering. A future
+        iteration can add markdown if pilots actually ask for it.
+
+        Layout: header strip (title + refresh + close), scrollable
+        content area below, single OK button at bottom. The refresh
+        button lets the user re-fetch without closing — useful when
+        the first fetch hit a transient network blip.
+    -->
+    <Window.Resources>
+        <SolidColorBrush x:Key="BgPrimary" Color="#1c1c23" />
+        <SolidColorBrush x:Key="BgSecondary" Color="#25252e" />
+        <SolidColorBrush x:Key="BorderMuted" Color="#34343f" />
+        <SolidColorBrush x:Key="TextPrimary" Color="#e8e8ee" />
+        <SolidColorBrush x:Key="TextMuted" Color="#9090a0" />
+        <SolidColorBrush x:Key="AccentBlue" Color="#78c8ff" />
+        <SolidColorBrush x:Key="AccentGreen" Color="#5dd594" />
+        <BooleanToVisibilityConverter x:Key="BoolToVis" />
+    </Window.Resources>
+
+    <Grid Margin="20">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <!-- ─── Header ─────────────────────────────────────────────── -->
+        <StackPanel Grid.Row="0" Margin="0,0,0,12">
+            <TextBlock Text="CHANGELOG"
+                       Foreground="{StaticResource TextMuted}"
+                       FontSize="11"
+                       FontWeight="SemiBold" />
+            <TextBlock Text="Release-Notes der letzten Versionen — neueste zuerst."
+                       Foreground="{StaticResource TextMuted}"
+                       FontSize="11"
+                       Margin="0,4,0,0" />
+        </StackPanel>
+
+        <!-- ─── Content ────────────────────────────────────────────── -->
+        <Border Grid.Row="1"
+                Background="{StaticResource BgSecondary}"
+                BorderBrush="{StaticResource BorderMuted}"
+                BorderThickness="1"
+                CornerRadius="6"
+                Padding="0">
+            <Grid>
+                <!--
+                    Loading indicator. Shown while the GitHub fetch is
+                    in flight. Code-behind flips IsLoading via Visibility
+                    rather than toggling the panel's children, so the
+                    layout doesn't reflow between loading/loaded states.
+                -->
+                <TextBlock x:Name="LoadingText"
+                           Text="Lade Release-Notes…"
+                           Foreground="{StaticResource TextMuted}"
+                           FontSize="12"
+                           HorizontalAlignment="Center"
+                           VerticalAlignment="Center"
+                           Visibility="Visible" />
+
+                <!--
+                    Empty state. Shown when the fetch completes but
+                    returns no entries (network failure, rate limit,
+                    or actually-no-releases-yet). Code-behind toggles
+                    visibility based on the list count after FetchAsync.
+                -->
+                <TextBlock x:Name="EmptyText"
+                           Text="Keine Release-Notes verfügbar. Prüfe die Netzwerkverbindung oder öffne die Releases-Seite im Browser."
+                           Foreground="{StaticResource TextMuted}"
+                           FontSize="12"
+                           HorizontalAlignment="Center"
+                           VerticalAlignment="Center"
+                           TextAlignment="Center"
+                           TextWrapping="Wrap"
+                           MaxWidth="400"
+                           Visibility="Collapsed" />
+
+                <!--
+                    Release list. ItemsControl with vertical scrolling
+                    via ScrollViewer wrapper. Each item is a tiered
+                    block: tag/version header (large), published_at
+                    sub-line (small/muted), body (wrapped monospace
+                    consolas). DataTemplate binds to ReleaseEntry.
+                -->
+                <ScrollViewer x:Name="ContentScroll"
+                              VerticalScrollBarVisibility="Auto"
+                              Padding="16"
+                              Visibility="Collapsed">
+                    <ItemsControl x:Name="ReleaseList">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate DataType="{x:Type core:ReleaseEntry}">
+                                <Border Margin="0,0,0,16"
+                                        Padding="0,0,0,12"
+                                        BorderBrush="{StaticResource BorderMuted}"
+                                        BorderThickness="0,0,0,1">
+                                    <StackPanel>
+                                        <!--
+                                            Version header: name + tag.
+                                            Most releases have Name="Release 0.1.0"
+                                            and Tag="v0.1.0"; we render both for
+                                            clarity. AccentBlue makes each release
+                                            head clearly distinguishable in the
+                                            scroll stream.
+                                        -->
+                                        <StackPanel Orientation="Horizontal">
+                                            <TextBlock Text="{Binding Name}"
+                                                       Foreground="{StaticResource AccentBlue}"
+                                                       FontSize="15"
+                                                       FontWeight="SemiBold" />
+                                            <TextBlock Text="{Binding Tag, StringFormat='  ({0})'}"
+                                                       Foreground="{StaticResource TextMuted}"
+                                                       FontSize="11"
+                                                       VerticalAlignment="Center"
+                                                       Margin="0,2,0,0" />
+                                        </StackPanel>
+
+                                        <!--
+                                            Publish date. Bound via the formatted
+                                            string converter inside the binding —
+                                            no custom IValueConverter needed
+                                            because DateTimeOffset.ToString("yyyy-MM-dd")
+                                            is reachable from a binding's
+                                            StringFormat.
+                                        -->
+                                        <TextBlock Text="{Binding PublishedAt, StringFormat='Veröffentlicht: {0:yyyy-MM-dd}', FallbackValue='', TargetNullValue=''}"
+                                                   Foreground="{StaticResource TextMuted}"
+                                                   FontSize="11"
+                                                   Margin="0,2,0,8" />
+
+                                        <!--
+                                            Body. Consolas + wrap so markdown
+                                            bullet lists keep their alignment
+                                            and long lines wrap rather than
+                                            requiring horizontal scroll. The
+                                            body is plain text — no markdown
+                                            rendering — so a "## Header" line
+                                            renders as literal "## Header".
+                                            Acceptable for v1; future enhancement
+                                            could add a markdown renderer.
+                                        -->
+                                        <TextBlock Text="{Binding Body}"
+                                                   Foreground="{StaticResource TextPrimary}"
+                                                   FontSize="12"
+                                                   FontFamily="Consolas"
+                                                   TextWrapping="Wrap" />
+                                    </StackPanel>
+                                </Border>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </ScrollViewer>
+            </Grid>
+        </Border>
+
+        <!-- ─── Footer ─────────────────────────────────────────────── -->
+        <StackPanel Grid.Row="2"
+                    Orientation="Horizontal"
+                    HorizontalAlignment="Right"
+                    Margin="0,12,0,0">
+            <!--
+                Refresh button — fires another FetchAsync without
+                closing the dialog. Useful when the first fetch hit
+                a transient blip; user clicks refresh, the loading
+                indicator shows up again, then the list re-renders.
+            -->
+            <Button x:Name="RefreshButton"
+                    Click="OnRefreshClick"
+                    Padding="14,6"
+                    Margin="0,0,8,0"
+                    Background="{StaticResource BgSecondary}"
+                    Foreground="{StaticResource TextPrimary}"
+                    FontSize="12"
+                    BorderThickness="1"
+                    BorderBrush="{StaticResource BorderMuted}"
+                    Cursor="Hand"
+                    Content="Neu laden"
+                    ToolTip="Lädt die Release-Notes erneut von GitHub.">
+                <Button.Template>
+                    <ControlTemplate TargetType="Button">
+                        <Border Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="4"
+                                Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Center"
+                                              VerticalAlignment="Center"
+                                              TextElement.Foreground="{TemplateBinding Foreground}" />
+                        </Border>
+                    </ControlTemplate>
+                </Button.Template>
+                <Button.Style>
+                    <Style TargetType="Button">
+                        <Style.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter Property="Background" Value="{StaticResource BgPrimary}" />
+                            </Trigger>
+                        </Style.Triggers>
+                    </Style>
+                </Button.Style>
+            </Button>
+
+            <!--
+                Close button. IsDefault=True makes Enter close, IsCancel=True
+                makes Escape close — standard dialog ergonomics.
+            -->
+            <Button x:Name="CloseButton"
+                    Click="OnCloseClick"
+                    Padding="14,6"
+                    Background="{StaticResource AccentBlue}"
+                    Foreground="{StaticResource BgPrimary}"
+                    FontSize="12"
+                    FontWeight="SemiBold"
+                    BorderThickness="0"
+                    Cursor="Hand"
+                    Content="Schließen"
+                    IsDefault="True"
+                    IsCancel="True">
+                <Button.Template>
+                    <ControlTemplate TargetType="Button">
+                        <Border Background="{TemplateBinding Background}"
+                                CornerRadius="4"
+                                Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Center"
+                                              VerticalAlignment="Center"
+                                              TextElement.Foreground="{TemplateBinding Foreground}" />
+                        </Border>
+                    </ControlTemplate>
+                </Button.Template>
+                <Button.Style>
+                    <Style TargetType="Button">
+                        <Style.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter Property="Opacity" Value="0.85" />
+                            </Trigger>
+                        </Style.Triggers>
+                    </Style>
+                </Button.Style>
+            </Button>
+        </StackPanel>
+    </Grid>
+</Window>
