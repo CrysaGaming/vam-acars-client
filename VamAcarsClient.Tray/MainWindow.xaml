@@ -1449,6 +1449,65 @@
                         </Button>
 
                         <!--
+                            Token-rotate button (Welle A — option A3).
+                            Routine workflow affordance, distinct from
+                            the AccentRed "Gerät neu koppeln" button
+                            below.
+
+                            Visual contract:
+                              - Rotate = AccentBlue, positive action.
+                                "I want a fresh token, no fuss."
+                              - Re-pair = AccentRed, panic mode.
+                                "Something is broken, let me unpair."
+
+                            Click handler in code-behind tears down the
+                            session, clears the token, then auto-opens
+                            PairingDialog so the user lands in the
+                            pairing flow without a second click. No
+                            confirmation MessageBox — clicking Rotate IS
+                            the intent confirmation.
+
+                            Visibility gated on HasToken=true via
+                            BoolToVis converter, same as the re-pair
+                            button. Nothing to rotate when not paired.
+                        -->
+                        <Button x:Name="RotateTokenButton"
+                                Click="OnRotateTokenClick"
+                                HorizontalAlignment="Left"
+                                Margin="0,8,0,0"
+                                Padding="14,6"
+                                Background="{StaticResource AccentBlue}"
+                                Foreground="{StaticResource BgPrimary}"
+                                FontSize="12"
+                                FontWeight="SemiBold"
+                                BorderThickness="0"
+                                Cursor="Hand"
+                                Content="Token rotieren"
+                                Visibility="{Binding HasToken, Converter={StaticResource BoolToVis}}"
+                                ToolTip="Trennt die laufende Sitzung, verwirft den aktuellen Token und öffnet sofort den Pairing-Dialog. Für routine-rotation (z. B. nach server-side token-refresh) — kein Bestätigungsdialog.">
+                            <Button.Template>
+                                <ControlTemplate TargetType="Button">
+                                    <Border Background="{TemplateBinding Background}"
+                                            CornerRadius="4"
+                                            Padding="{TemplateBinding Padding}">
+                                        <ContentPresenter HorizontalAlignment="Center"
+                                                          VerticalAlignment="Center"
+                                                          TextElement.Foreground="{TemplateBinding Foreground}" />
+                                    </Border>
+                                </ControlTemplate>
+                            </Button.Template>
+                            <Button.Style>
+                                <Style TargetType="Button">
+                                    <Style.Triggers>
+                                        <Trigger Property="IsMouseOver" Value="True">
+                                            <Setter Property="Opacity" Value="0.85" />
+                                        </Trigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </Button.Style>
+                        </Button>
+
+                        <!--
                             Re-pair button (option #3). Lets the user explicitly
                             unpair this device so they can re-pair against a
                             fresh code from the web UI — useful after a token

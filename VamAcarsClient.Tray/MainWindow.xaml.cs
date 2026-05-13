@@ -396,6 +396,69 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
+    /// Token-rotate button handler (Welle A — option A3). Routine
+    /// workflow: tear down the current session, clear the stored token,
+    /// and open the pairing dialog automatically so the user can redeem
+    /// a fresh code in one continuous flow.
+    ///
+    /// Distinct from <see cref="OnRepairClick"/> by intent and tone:
+    ///   - Repair = panic mode. "Something is broken, let me unpair."
+    ///     MessageBox confirmation, AccentRed framing, no automatic
+    ///     follow-on. The user explicitly opts in to the destruction.
+    ///   - Rotate = routine mode. "I want a fresh token." No
+    ///     confirmation (that IS the intent), AccentBlue framing,
+    ///     PairingDialog auto-opens. The user is mid-task and the
+    ///     button completes the task.
+    ///
+    /// The pairing dialog opens RIGHT after UnpairAsync completes —
+    /// no intermediate UI step. The dialog itself is modal owned by
+    /// MainWindow (same as OnPairClick), so it blocks input and sits
+    /// centred. If the user cancels the dialog they're left in the
+    /// unpaired state (which matches what they explicitly asked for
+    /// by clicking Rotate); they can use the regular "Gerät pairen…"
+    /// button to retry whenever.
+    ///
+    /// Async-void rationale: same as OnRepairClick — UI event handler,
+    /// service surfaces errors via state, no caller to await us.
+    /// </summary>
+    private async void OnRotateTokenClick(object sender, RoutedEventArgs e)
+    {
+        var app = (App)Application.Current;
+        var service = app.Service;
+        if (service is null)
+        {
+            // Defensive: see OnRepairClick for the same reasoning. The
+            // button is HasToken-gated so the service should always
+            // exist, but fail loud if a future refactor breaks that.
+            MessageBox.Show(
+                this,
+                "Service ist nicht verfügbar — bitte App neu starten.",
+                "Fehler",
+                MessageBoxButton.OK,
+                MessageBoxImage.Error);
+            return;
+        }
+
+        // UnpairAsync stops any running heartbeat session, clears the
+        // DPAPI-encrypted token from disk, and flips state.HasToken to
+        // false. It also writes a friendly status-message which we
+        // immediately override below — the dialog is opening anyway,
+        // a "Gerät entkoppelt" line in the footer would be misleading
+        // because the rotation isn't actually done yet.
+        await service.UnpairAsync();
+
+        // Hand off straight to the pairing dialog. Same pattern as
+        // OnPairClick — modal, owned by this window. On success the
+        // dialog has already flipped HasToken back to true via App's
+        // PairDeviceAsync, so the UI updates itself.
+        var dialog = new PairingDialog
+        {
+            Owner = this,
+        };
+        dialog.ShowDialog();
+    }
+
+    /// <summary>
     /// Sim-probe button handler (option #11). Delegates to
     /// <see cref="App.ProbeSimAsync"/> which owns the SimConnect probe
     /// + state-mutation + status-message. Async-void is fine here for
