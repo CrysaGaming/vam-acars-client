@@ -154,6 +154,55 @@ public sealed class HeartbeatService : IDisposable
     /// <summary>Fired on every failed send. Param: human-readable reason.</summary>
     public event Action<string>? HeartbeatFailed;
 
+    /// <summary>
+    /// Welle B / B4 phase 2 — fired after a heartbeat carrying the
+    /// aircraftSubstitution block was acknowledged by the server (2xx).
+    /// Lets the caller (Tray) clear its UI-state's PendingSubstitution*
+    /// fields so the block isn't re-staged on subsequent heartbeats.
+    /// Fires at most once per <see cref="SetPendingAircraftSubstitution"/>
+    /// call — the field is cleared atomically inside the success path
+    /// before the event fires.
+    /// </summary>
+    public event Action? AircraftSubstitutionDelivered;
+
+    /// <summary>
+    /// Welle B / B4 phase 2 — currently-staged aircraft-substitution
+    /// disposition. Included in <see cref="BuildHeartbeat"/> while
+    /// non-null; cleared automatically in the success path after a
+    /// 2xx response on a heartbeat that carried the block.
+    ///
+    /// Why mutable field rather than constructor parameter: the
+    /// disposition is decided in the pre-connect dialog AFTER
+    /// HeartbeatService is constructed but BEFORE Start() — and we
+    /// want the very first heartbeat to carry it. A ctor parameter
+    /// would force the AcarsClientService to defer construction or
+    /// rebuild the service after the dialog, both of which complicate
+    /// StartAsync's flow for no real benefit.
+    ///
+    /// Why Interlocked.Exchange rather than lock: the field is
+    /// read on the send-loop's thread (BuildHeartbeat) and written
+    /// on the UI thread (via SetPendingAircraftSubstitution from
+    /// the dialog's confirm-handler), plus cleared on the send-loop's
+    /// thread (success path). Reference assignment is atomic in .NET
+    /// for 64-bit reference fields, but Interlocked.Exchange makes
+    /// the memory-barrier explicit so a stale value can't leak
+    /// across cores under aggressive optimization.
+    /// </summary>
+    private HeartbeatAircraftSubstitution? _pendingAircraftSubstitution;
+
+    /// <summary>
+    /// Stage an aircraft-substitution disposition for inclusion in the
+    /// NEXT heartbeat. Pass null to cancel a previously-staged
+    /// disposition (rare — the dialog can't normally un-confirm).
+    /// Cleared automatically after the first successful send carrying
+    /// the block; <see cref="AircraftSubstitutionDelivered"/> fires
+    /// at that point.
+    /// </summary>
+    public void SetPendingAircraftSubstitution(HeartbeatAircraftSubstitution? sub)
+    {
+        Interlocked.Exchange(ref _pendingAircraftSubstitution, sub);
+    }
+
     public HeartbeatService(
         HttpClient http,
         SimConnectClient sim,
@@ -471,6 +520,51 @@ public sealed class HeartbeatService : IDisposable
                         // side. Runs unconditionally — TrackBlockEvents is
                         // a no-op when nothing relevant happened.
                         TrackBlockEvents(body, hb);
+
+                        // ─── Aircraft-substitution clear-on-success ────
+                        // (Welle B — B4 phase 2)
+                        //
+                        // If this heartbeat carried the substitution block,
+                        // it was successfully persisted server-side. Clear
+                        // the staged field so subsequent heartbeats omit
+                        // the block, and fire the Delivered event so the
+                        // UI knows it can clear its Pending* state.
+                        //
+                        // Interlocked.CompareExchange handles the race
+                        // where the user re-stages a different disposition
+                        // between our send and the response landing
+                        // (extremely rare — would need the user to
+                        // discover and confirm a new mismatch in <2s).
+                        // We only clear when the current field still
+                        // points at exactly the disposition we sent; if
+                        // it doesn't, the user's newer disposition is
+                        // already in flight on a subsequent heartbeat
+                        // and we shouldn't blow it away.
+                        //
+                        // The event fires only when the CompareExchange
+                        // actually cleared the field — otherwise the UI's
+                        // Pending* state belongs to the newer disposition
+                        // and shouldn't be cleared yet.
+                        if (hb.AircraftSubstitution is not null)
+                        {
+                            var sentSub = hb.AircraftSubstitution;
+                            var original = Interlocked.CompareExchange(
+                                ref _pendingAircraftSubstitution, null, sentSub);
+                            if (ReferenceEquals(original, sentSub))
+                            {
+                                _logger.LogInformation(
+                                    "Aircraft-substitution disposition delivered (intent={Intent}, booked={Booked}, flown={Flown}).",
+                                    sentSub.Intent,
+                                    sentSub.BookedAircraftType,
+                                    sentSub.FlownAircraftType);
+                                AircraftSubstitutionDelivered?.Invoke();
+                            }
+                            else
+                            {
+                                _logger.LogDebug(
+                                    "Aircraft-substitution disposition was re-staged before delivery confirmed — leaving new value for next heartbeat.");
+                            }
+                        }
 
                         HeartbeatSent?.Invoke(body);
                     }
@@ -877,6 +971,21 @@ public sealed class HeartbeatService : IDisposable
                 Com1StandbyMhz = HzToMhzOrNull(t.Com1StandbyFreqHz),
                 Nav1ActiveMhz = HzToMhzOrNull(t.Nav1ActiveFreqHz),
             },
+
+            // ─── Aircraft substitution (Welle B — B4 phase 2) ───────
+            // Read the currently-staged disposition into the heartbeat.
+            // We do NOT clear the field here — that happens in the
+            // success path via Interlocked.CompareExchange after the
+            // server has acknowledged. If the send fails (network drop,
+            // 5xx, etc.) the disposition stays staged and rides along
+            // on the next heartbeat too — far better than losing the
+            // pilot's pre-flight intent to a transient network hiccup.
+            //
+            // Volatile.Read for the read so the JIT can't hoist this
+            // out of the per-tick BuildHeartbeat call. Reference reads
+            // are atomic on .NET, but the volatile prevents reordering
+            // with the CompareExchange in the success-clear path.
+            AircraftSubstitution = Volatile.Read(ref _pendingAircraftSubstitution),
         };
     }
 
@@ -988,6 +1097,19 @@ public sealed class HeartbeatRequest
     /// as the "ATC Sessions" section on the PIREP page.
     /// </summary>
     [JsonPropertyName("radios")] public HeartbeatRadios? Radios { get; init; }
+
+    /// <summary>
+    /// Welle B — B4 phase 2. Aircraft-substitution disposition staged
+    /// by the pre-flight checklist when the booked aircraft type and
+    /// the sim-loaded aircraft type disagree. Sent on the heartbeat(s)
+    /// that carry the staged disposition; cleared by HeartbeatService
+    /// after the server has acknowledged a heartbeat carrying it.
+    ///
+    /// Optional: most heartbeats omit the block (steady-state). Pre-B4
+    /// servers strip it via zod's default unknown-field handling, so
+    /// sending it to an older server is safe.
+    /// </summary>
+    [JsonPropertyName("aircraftSubstitution")] public HeartbeatAircraftSubstitution? AircraftSubstitution { get; init; }
 }
 
 public sealed class HeartbeatFlight
@@ -1108,6 +1230,44 @@ public sealed class HeartbeatRadios
     [JsonPropertyName("com1ActiveMhz")] public double? Com1ActiveMhz { get; init; }
     [JsonPropertyName("com1StandbyMhz")] public double? Com1StandbyMhz { get; init; }
     [JsonPropertyName("nav1ActiveMhz")] public double? Nav1ActiveMhz { get; init; }
+}
+
+/// <summary>
+/// Welle B — B4 phase 2. Pre-flight aircraft-substitution disposition.
+/// Wire shape mirrors the server's zod schema in
+/// apps/web/app/api/acars/heartbeat/route.ts (the aircraftSubstitution
+/// block).
+///
+/// # Field semantics
+///
+/// - Intent: "intentional" or "wrongBooking". The third option from
+///   the dialog ("wrongLoaded — sim schließen") doesn't reach the
+///   server because the tray aborts the connect flow client-side; no
+///   heartbeat is sent. Server schema rejects any other value.
+/// - BookedAircraftType / FlownAircraftType: ICAO designators captured
+///   at dialog-confirm time. Snapshots so admin review later sees
+///   exactly what the pilot was comparing, not what the system thinks
+///   now. Server enforces 1-8 char window which tolerates manufacturer
+///   variants while still being clearly typed.
+/// - Reason: optional free text, intentional only. Server enforces
+///   200 char max. The tray's dialog only surfaces the text-box when
+///   intent == "intentional"; for "wrongBooking" this stays null and
+///   the disposition itself is the signal.
+///
+/// # Why a dedicated DTO class
+///
+/// Same pattern as <see cref="HeartbeatRadios"/> and
+/// <see cref="HeartbeatEnvironment"/>: each new heartbeat-payload
+/// section gets its own POCO so the JSON-shape and the server-side
+/// zod schema track one-to-one. Mixing this into HeartbeatRequest
+/// directly would dilute that mapping.
+/// </summary>
+public sealed class HeartbeatAircraftSubstitution
+{
+    [JsonPropertyName("intent")] public required string Intent { get; init; }
+    [JsonPropertyName("bookedAircraftType")] public required string BookedAircraftType { get; init; }
+    [JsonPropertyName("flownAircraftType")] public required string FlownAircraftType { get; init; }
+    [JsonPropertyName("reason")] public string? Reason { get; init; }
 }
 
 public sealed class HeartbeatResponse

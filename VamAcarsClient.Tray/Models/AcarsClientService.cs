@@ -467,6 +467,20 @@ public sealed class AcarsClientService : IDisposable
             // visibly clears the moment the session ends, not on the
             // next user click.
             s.ResetPreflightChecklist();
+
+            // Welle B / B4 phase 2A — booking + substitution reset.
+            // ActiveBooking* is the snapshot from the previous session's
+            // pre-connect fetch; carrying it into a fresh Verbinden cycle
+            // would briefly show a stale booking before the new fetch
+            // refreshes it. Pending* would be even worse — a heartbeat
+            // sent right after Verbinden could resurface a stale
+            // substitution disposition that no longer applies (e.g., the
+            // user fixed the loaded aircraft between sessions). Both
+            // clears happen on the UI thread inside the same SetStateAsync
+            // block as the other resets, so the UI sees one atomic
+            // "back to clean" transition.
+            s.ClearActiveBooking();
+            s.ClearPendingSubstitution();
         });
 
         // ─── Crash-recovery marker cleanup (option #13) ────────────────
