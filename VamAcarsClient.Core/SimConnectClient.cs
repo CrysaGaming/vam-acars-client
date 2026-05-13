@@ -222,6 +222,30 @@ public sealed class SimConnectClient : IDisposable
         Add("AMBIENT TEMPERATURE", "celsius");
         Add("BAROMETER PRESSURE", "millibars");
 
+        // ─── Radios (Welle B — B2 phase 1) ───────────────────────────
+        // COM1/NAV1 frequencies in Hz (FLOAT64). The "Hz" unit gives us
+        // an integer-valued double in full hertz (121.605 MHz arrives as
+        // 121_605_000.0), preserving 8.33-kHz channel spacing that the
+        // BCD16 unit can't represent. The HeartbeatService converts to
+        // MHz with 3-decimal precision before sending — the wire format
+        // matches aviation radio convention (119.0, 118.875).
+        //
+        // Order matches the field-order in SimTelemetry.cs exactly:
+        //   - Com1ActiveFreqHz
+        //   - Com1StandbyFreqHz
+        //   - Nav1ActiveFreqHz
+        // If you reorder these or the struct, marshalling silently
+        // misaligns and downstream values become garbage.
+        //
+        // Why no COM2/NAV2 in v1: most VATSIM pilots fly with COM1
+        // active; COM2 is rarely used outside dual-controller scenarios.
+        // Adding COM2/NAV2 doubles the per-heartbeat wire payload for
+        // marginal matcher-coverage gain. Can add later if pilots report
+        // missing ATC-sessions because they used COM2.
+        Add("COM ACTIVE FREQUENCY:1", "Hz");
+        Add("COM STANDBY FREQUENCY:1", "Hz");
+        Add("NAV ACTIVE FREQUENCY:1", "Hz");
+
         // String SimVars use a different overload — explicit STRING32
         // datatype, no units string. SimConnect treats strings as fixed-
         // length byte buffers; the wrapper marshalls them into our

@@ -858,7 +858,47 @@ public sealed class HeartbeatService : IDisposable
                 OatCelsius = (int)Math.Round(t.AmbientTemperatureCelsius),
                 AmbientPressureMb = t.AmbientPressureMb,
             },
+
+            // ─── Radios (Welle B — B2 phase 1) ──────────────────────
+            // COM1 + NAV1 snapshot for ATC-session tracking. SimConnect
+            // reports frequencies in Hz; we convert to MHz with 3-decimal
+            // precision (matches aviation radio convention: 121.605,
+            // 118.875). Zero-Hz readings → null on the wire: most aircraft
+            // have COM2/NAV2 unconfigured and SimConnect reports 0 for
+            // them; a true "0 MHz" reading is physically impossible
+            // (lowest VHF aviation band starts at 108 MHz) so the
+            // ambiguity is safe to resolve as "absent". Server schema
+            // (phase 2) treats this whole block as optional + each field
+            // as nullable; pre-B2 servers ignore the block entirely
+            // thanks to zod's strip-unknown default.
+            Radios = new HeartbeatRadios
+            {
+                Com1ActiveMhz = HzToMhzOrNull(t.Com1ActiveFreqHz),
+                Com1StandbyMhz = HzToMhzOrNull(t.Com1StandbyFreqHz),
+                Nav1ActiveMhz = HzToMhzOrNull(t.Nav1ActiveFreqHz),
+            },
         };
+    }
+
+    /// <summary>
+    /// Convert a SimConnect "Hz" radio reading to MHz with 3-decimal
+    /// precision, or null when the reading is zero/unset.
+    ///
+    /// Zero is treated as null because most general-aviation cockpits
+    /// only configure COM1 — COM2/NAV2 are left at 0 Hz and would
+    /// otherwise wire-send as "0 MHz" which the server-side matcher
+    /// could mistake for a valid frequency to look up in the VATSIM
+    /// ATC datafeed (where it'd never match anything, wasting one
+    /// lookup per heartbeat per aircraft type).
+    ///
+    /// Rounding to 3 decimals captures the 8.33-kHz channel spacing
+    /// used in European airspace since 2018 (118.005, 118.010, …) while
+    /// dropping floating-point noise from the Hz-to-MHz division.
+    /// </summary>
+    private static double? HzToMhzOrNull(double hz)
+    {
+        if (hz <= 0.0) return null;
+        return Math.Round(hz / 1_000_000.0, 3);
     }
 
     /// <summary>
@@ -936,6 +976,18 @@ public sealed class HeartbeatRequest
     /// DB column.
     /// </summary>
     [JsonPropertyName("environment")] public HeartbeatEnvironment? Environment { get; init; }
+
+    /// <summary>
+    /// Welle B — B2. COM1 + NAV1 frequency snapshot (MHz) for the
+    /// ATC-session-tracking feature. Server-side schema for this block
+    /// arrives in Welle B Phase 2 — sending now is safe because zod's
+    /// strip-unknown default makes pre-B2 servers ignore it. Once Phase
+    /// 2 lands, the server matches these frequencies against the VATSIM
+    /// ATC datafeed (controller + frequency + position) to attribute
+    /// the pilot to specific ATC stations during the flight, surfaced
+    /// as the "ATC Sessions" section on the PIREP page.
+    /// </summary>
+    [JsonPropertyName("radios")] public HeartbeatRadios? Radios { get; init; }
 }
 
 public sealed class HeartbeatFlight
@@ -1017,6 +1069,45 @@ public sealed class HeartbeatEnvironment
     [JsonPropertyName("windDirection")] public int? WindDirection { get; init; }
     [JsonPropertyName("oatCelsius")] public int? OatCelsius { get; init; }
     [JsonPropertyName("ambientPressureMb")] public double? AmbientPressureMb { get; init; }
+}
+
+/// <summary>
+/// Welle B — B2 phase 1. COM1 + NAV1 frequency snapshot in MHz for
+/// the ATC-session-tracking feature. Server-side persistence + VATSIM-
+/// datafeed-match arrives in Welle B Phase 2; sending these fields
+/// now is safe because zod's strip-unknown default makes pre-B2
+/// servers ignore the whole block.
+///
+/// All fields optional + nullable:
+///   - HzToMhzOrNull treats 0 Hz as "no radio configured" and returns
+///     null. Most general-aviation cockpits only configure COM1, so
+///     COM2/NAV2 commonly come through as null. Including them as
+///     null on the wire (rather than absent) would falsely tell the
+///     future v2 matcher that "the pilot was tuned to 0 MHz".
+///   - WhenWritingNull on the JSON serializer means null fields are
+///     dropped from the wire format entirely. Zod's `.optional()`
+///     accepts that as "field not provided" — exactly what we want.
+///   - Unit: MHz with 3-decimal precision (e.g. 121.605). Aviation
+///     radio convention; matches VATSIM controller frequencies in
+///     the datafeed; supports 8.33-kHz channel spacing required in
+///     European airspace since 2018.
+///
+/// Field mapping (planned route.ts zod schema for Phase 2):
+///   - com1ActiveMhz  → server radios.com1ActiveMhz  (number, 108-137)
+///   - com1StandbyMhz → server radios.com1StandbyMhz (number, 108-137)
+///   - nav1ActiveMhz  → server radios.nav1ActiveMhz  (number, 108-118)
+///
+/// Why a top-level "radios" block rather than top-level fields:
+/// matches the pattern set by the environment block, scoping the
+/// new functionality under a clearly-named namespace makes diffs
+/// easier to follow, and keeps the door open for radios.com2/nav2
+/// without polluting the top-level HeartbeatRequest schema later.
+/// </summary>
+public sealed class HeartbeatRadios
+{
+    [JsonPropertyName("com1ActiveMhz")] public double? Com1ActiveMhz { get; init; }
+    [JsonPropertyName("com1StandbyMhz")] public double? Com1StandbyMhz { get; init; }
+    [JsonPropertyName("nav1ActiveMhz")] public double? Nav1ActiveMhz { get; init; }
 }
 
 public sealed class HeartbeatResponse

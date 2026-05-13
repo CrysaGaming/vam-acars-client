@@ -88,6 +88,36 @@ public struct SimTelemetry
     public double AmbientTemperatureCelsius;
     public double AmbientPressureMb;
 
+    // ─── Radios (Welle B — B2 phase 1) ─────────────────────────
+    // COM1 + NAV1 frequencies for ATC-session tracking. The server
+    // matches these against the VATSIM ATC datafeed (controller online
+    // + frequency + position) to attribute the pilot to specific ATC
+    // stations during the flight — "12:42 EDDF_GND 121.6 (5 min)" lines
+    // on the PIREP-page.
+    //
+    // SimConnect's COM/NAV ACTIVE FREQUENCY simvars are pulled with the
+    // "Hz" unit so we get full-precision integer Hertz as a double
+    // (e.g. 121.605 MHz → 121_605_000.0). Server-side we convert to MHz
+    // with 3-decimal precision to match aviation radio convention. Why
+    // Hz over BCD16: BCD-encoding can't represent 8.33-kHz channel
+    // spacing (121.605, 121.610, …) which is mandatory in European
+    // airspace since 2018. Hz-as-double handles it natively.
+    //
+    // COM1 is the primary radio. COM1 Standby is included because pilots
+    // pre-tune the next controller's frequency before contacting them,
+    // and capturing standby lets the matcher reason about hand-offs
+    // ("the pilot was on EDDF_TWR but had EDDF_DEP standby → expected
+    // hand-off"). NAV1 active captures ILS frequencies during approach,
+    // which the future v2 matcher could use to confirm which runway the
+    // pilot intended (ILS-frequency-to-runway mapping is well-known per
+    // ICAO databases).
+    //
+    // Sending now is safe pre-server: zod strips unknown fields by
+    // default, so a pre-B2 server just ignores the new payload block.
+    public double Com1ActiveFreqHz;
+    public double Com1StandbyFreqHz;
+    public double Nav1ActiveFreqHz;
+
     // ─── Aircraft identity (STRING32) ──────────────────────────
     // ATC MODEL = ICAO type designator (e.g. "C172", "A20N", "B738").
     // ATC ID    = aircraft registration (e.g. "D-EXXX", "N12345").
