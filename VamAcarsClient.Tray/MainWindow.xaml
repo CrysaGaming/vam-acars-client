@@ -264,11 +264,109 @@
                            FontSize="11"
                            FontWeight="Bold" />
             </Border>
+
+            <!--
+                A2 — Secondary network-pill. Mirrors NetworkHealthState
+                ("Online"/"Degraded"/"Offline") with the same color
+                bucketing as the HEARTBEATS expander, but at glance-
+                distance in the header so the pilot doesn't need to
+                unfold the expander mid-flight to know if heartbeats
+                are landing.
+
+                Visibility gated on ConnectionStatus=Connected — before
+                Verbinden there's nothing meaningful to report, showing
+                "● NETZ: Unknown" while the form is being filled would
+                be visual noise. After Trennen the pill disappears
+                again. Slightly smaller than the ConnectionStatus pill
+                so the visual hierarchy stays honest: "Connected" is
+                the primary state, "Online/Degraded/Offline" is the
+                secondary detail.
+            -->
+            <Border CornerRadius="10"
+                    Padding="8,3"
+                    HorizontalAlignment="Left"
+                    Margin="0,4,0,0">
+                <Border.Style>
+                    <Style TargetType="Border">
+                        <Setter Property="Visibility" Value="Collapsed" />
+                        <Setter Property="Background" Value="{StaticResource TextMuted}" />
+                        <Style.Triggers>
+                            <!--
+                                Order matters: the connect-gate trigger
+                                comes first so the visibility flip wins
+                                over the default Collapsed setter. The
+                                three NetworkHealthState triggers then
+                                paint the background — none of them
+                                touch Visibility, so the Connected gate
+                                stays in effect.
+                            -->
+                            <DataTrigger Binding="{Binding ConnectionStatus}" Value="Connected">
+                                <Setter Property="Visibility" Value="Visible" />
+                            </DataTrigger>
+                            <DataTrigger Binding="{Binding NetworkHealthState}" Value="Online">
+                                <Setter Property="Background" Value="{StaticResource AccentGreen}" />
+                            </DataTrigger>
+                            <DataTrigger Binding="{Binding NetworkHealthState}" Value="Degraded">
+                                <Setter Property="Background" Value="{StaticResource AccentYellow}" />
+                            </DataTrigger>
+                            <DataTrigger Binding="{Binding NetworkHealthState}" Value="Offline">
+                                <Setter Property="Background" Value="{StaticResource AccentRed}" />
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </Border.Style>
+                <StackPanel Orientation="Horizontal">
+                    <TextBlock Text="● NETZ: "
+                               Foreground="{StaticResource BgPrimary}"
+                               FontSize="10"
+                               FontWeight="Bold" />
+                    <TextBlock Text="{Binding NetworkHealthState}"
+                               Foreground="{StaticResource BgPrimary}"
+                               FontSize="10"
+                               FontWeight="Bold" />
+                </StackPanel>
+            </Border>
         </StackPanel>
 
         <!-- ─── CONTENT ────────────────────────────────────────────── -->
         <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
             <StackPanel>
+
+                <!--
+                    A2 — Recovery-flash banner. Visible for 5 seconds
+                    after the network transitions from Offline back to
+                    Online, then auto-hides via the one-shot
+                    DispatcherTimer in AcarsClientService.
+
+                    Why a transient banner rather than just relying on
+                    the secondary network-pill color flip: pilots may
+                    be busy in the cockpit and miss the moment the
+                    pill turns from red to green. A short-lived banner
+                    catches the eye while still respecting screen
+                    real-estate by disappearing once the recovery is
+                    no longer news.
+
+                    AccentGreen border + tint signals "good news"
+                    (contrast with the AccentYellow recovery-session
+                    banner below, which signals "attention needed").
+                    Margin matches the recovery-session banner so when
+                    both happen to be visible at the same time (rare
+                    but possible — crashed session AND just-recovered
+                    network) they read as a stacked notification
+                    column rather than collapsing into each other.
+                -->
+                <Border CornerRadius="6"
+                        BorderThickness="1"
+                        BorderBrush="{StaticResource AccentGreen}"
+                        Background="{StaticResource BgSecondary}"
+                        Padding="12,8"
+                        Margin="0,0,0,12"
+                        Visibility="{Binding NetworkRecoveredFlash, Converter={StaticResource BoolToVis}}">
+                    <TextBlock Text="✓  Verbindung wiederhergestellt"
+                               Foreground="{StaticResource AccentGreen}"
+                               FontSize="12"
+                               FontWeight="SemiBold" />
+                </Border>
 
                 <!--
                     Recovery banner (option #13). Visible only when
@@ -998,6 +1096,7 @@
                                     <RowDefinition Height="Auto" />
                                     <RowDefinition Height="Auto" />
                                     <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
                                 </Grid.RowDefinitions>
 
                                 <TextBlock Grid.Row="0" Grid.Column="0"
@@ -1021,7 +1120,25 @@
                                            Text="{Binding FailureRatePercent5Min, StringFormat={}{0}%}"
                                            Style="{StaticResource FieldValue}" Margin="0,0,0,4" />
 
+                                <!--
+                                    A2: "Letzter Versuch" — seconds since the
+                                    most recent heartbeat outcome. Helps the
+                                    pilot tell the difference between "loop
+                                    is alive but failing fast" (small value)
+                                    and "loop is stuck" (growing without
+                                    bound). 0 displays as "0 s" right after
+                                    connect; once the first heartbeat lands
+                                    it cycles between 0-2 s under normal
+                                    conditions.
+                                -->
                                 <TextBlock Grid.Row="3" Grid.Column="0"
+                                           Text="Letzter Versuch"
+                                           Style="{StaticResource FieldLabel}" Margin="0,0,0,4" />
+                                <TextBlock Grid.Row="3" Grid.Column="1"
+                                           Text="{Binding TimeSinceLastOutcomeSec, StringFormat={}{0} s}"
+                                           Style="{StaticResource FieldValue}" Margin="0,0,0,4" />
+
+                                <TextBlock Grid.Row="4" Grid.Column="0"
                                            Text="Netzwerk"
                                            Style="{StaticResource FieldLabel}" />
                                 <!--
@@ -1035,7 +1152,7 @@
                                     properties (font, alignment) mirror
                                     FieldValue manually.
                                 -->
-                                <TextBlock Grid.Row="3" Grid.Column="1"
+                                <TextBlock Grid.Row="4" Grid.Column="1"
                                            Text="{Binding NetworkHealthState}"
                                            FontSize="13"
                                            VerticalAlignment="Center"

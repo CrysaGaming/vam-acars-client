@@ -332,6 +332,50 @@ public class AcarsClientState : INotifyPropertyChanged
         set => SetField(ref _networkHealthState, value);
     }
 
+    // ─── Network-loss recovery UX (Welle A — option A2) ──────────────────
+    //
+    // Two additional properties surface the network's recovery story
+    // beyond the static-state classification from A1:
+    //
+    // - TimeSinceLastOutcomeSec — how long ago the most recent heartbeat
+    //   attempt landed (success OR failure). Lets the pilot see at a
+    //   glance whether the loop is still trying (small value, growing
+    //   by 2s each tick) or stuck (huge value).
+    //
+    // - NetworkRecoveredFlash — bool flag that goes true for ~5s after
+    //   a Offline → Online transition. Drives a transient banner so
+    //   the pilot sees the moment connectivity comes back, even if
+    //   they were looking away. AcarsClientService.OnTelemetryTick
+    //   sets it and schedules the timer that clears it.
+
+    private long _timeSinceLastOutcomeSec;
+    /// <summary>
+    /// Seconds since the most recent heartbeat outcome (success or fail).
+    /// 0 when not connected. Refreshed by OnTelemetryTick. Displayed in
+    /// the HEARTBEATS expander as the "Letzter Versuch" row, and used
+    /// implicitly by the network-pill text when state ≠ Online.
+    /// </summary>
+    public long TimeSinceLastOutcomeSec
+    {
+        get => _timeSinceLastOutcomeSec;
+        set => SetField(ref _timeSinceLastOutcomeSec, value);
+    }
+
+    private bool _networkRecoveredFlash;
+    /// <summary>
+    /// True for ~5 seconds after the network transitioned from Offline
+    /// back to Online. Drives a transient "Verbindung wiederhergestellt"
+    /// banner in the UI so the pilot gets explicit confirmation that
+    /// connectivity is back rather than having to notice the state-pill
+    /// change. AcarsClientService manages the timer; this property is
+    /// purely the bound visibility flag.
+    /// </summary>
+    public bool NetworkRecoveredFlash
+    {
+        get => _networkRecoveredFlash;
+        set => SetField(ref _networkRecoveredFlash, value);
+    }
+
     // ─── User preferences ────────────────────────────────────────────
 
     private bool _autoStartEnabled;

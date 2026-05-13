@@ -222,6 +222,26 @@ public sealed class HeartbeatService : IDisposable
     public long LastLatencyMs => Interlocked.Read(ref _lastLatencyMs);
 
     /// <summary>
+    /// Milliseconds since the last recorded outcome (success OR failure).
+    /// Drives the A2 "letzter Versuch vor X sek" display when the network
+    /// is degraded/offline — pilots want to know if the heartbeat-loop
+    /// is even still attempting sends or if it's stuck.
+    ///
+    /// Returns long.MaxValue when no outcome has been recorded yet
+    /// (fresh start). UI clamps this to a sentinel display before
+    /// any heartbeats land.
+    /// </summary>
+    public long TimeSinceLastOutcomeMs
+    {
+        get
+        {
+            if (_lastOutcomeAt == default) return long.MaxValue;
+            var diff = (DateTimeOffset.UtcNow - _lastOutcomeAt).TotalMilliseconds;
+            return diff < 0 ? 0 : (long)diff;
+        }
+    }
+
+    /// <summary>
     /// Average latency over successful sends in the last 5 minutes, in
     /// ms. Returns 0 if no successful sends have happened in the window.
     /// </summary>

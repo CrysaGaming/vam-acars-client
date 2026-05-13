@@ -83,6 +83,29 @@ public sealed class AcarsClientService : IDisposable
     // first to avoid a null-deref).
     private DispatcherTimer? _telemetryTimer;
 
+    // ─── Network-recovered flash (Welle A — option A2) ──────────────────
+    //
+    // Tracks the prior NetworkHealthState string so OnTelemetryTick can
+    // detect an Offline → Online transition and trigger a transient
+    // "Verbindung wiederhergestellt" banner. The _recoveryFlashTimer is
+    // a one-shot 5-second timer that clears the flag after the banner
+    // has been visible long enough to register.
+    //
+    // We use a string-comparison rather than the previous-value being a
+    // typed enum because HeartbeatService.NetworkHealthState returns a
+    // plain string ("Online" / "Degraded" / "Offline" / "Unknown") —
+    // duplicating that as an enum here would just add a mapping
+    // boundary without buying type-safety beyond the four legal values.
+    //
+    // Why detect on Offline → Online (not Degraded → Online): the flash
+    // is supposed to be a celebration of recovery from a real outage,
+    // not a debounce of routine state-jitter. A flap from Degraded to
+    // Online and back happens during normal network jitter; flashing
+    // each transition would be noise. Offline is a clear 2-min silence
+    // or >50% failure-rate floor, so the flash is rare and meaningful.
+    private string? _previousNetworkHealthState;
+    private DispatcherTimer? _recoveryFlashTimer;
+
     /// <summary>
     /// True between <see cref="StartAsync"/> succeeding and <see cref="StopAsync"/>
     /// returning. Used to gate Start (idempotent — second call is a no-op) and
@@ -314,6 +337,20 @@ public sealed class AcarsClientService : IDisposable
                 _telemetryTimer = null;
             }
 
+            // A2 recovery-flash cleanup. If a flash is in progress when
+            // the user disconnects, we want to clear it cleanly rather
+            // than leaving a green banner showing for a session that's
+            // already gone. Reset _previousNetworkHealthState too so
+            // the next Verbinden starts clean and doesn't accidentally
+            // detect a phantom "Offline → Online" transition based on
+            // a stale value carried over from the previous session.
+            if (_recoveryFlashTimer is not null)
+            {
+                _recoveryFlashTimer.Stop();
+                _recoveryFlashTimer = null;
+            }
+            _previousNetworkHealthState = null;
+
             _heartbeat.HeartbeatSent -= OnHeartbeatSent;
             _heartbeat.HeartbeatFailed -= OnHeartbeatFailed;
             _heartbeat.ReAuthRequired -= OnReAuthRequired;
@@ -352,6 +389,15 @@ public sealed class AcarsClientService : IDisposable
             s.AverageLatencyMs5Min = 0;
             s.FailureRatePercent5Min = 0;
             s.NetworkHealthState = "Unknown";
+
+            // A2 recovery-UX reset. TimeSinceLastOutcomeSec would stay
+            // pinned at whatever-value-when-stopped (often a large
+            // number if disconnect happened during an outage). Recovery
+            // flash needs to be cleared in case Stop landed inside the
+            // 5-second visibility window — otherwise the banner would
+            // outlive the session.
+            s.TimeSinceLastOutcomeSec = 0;
+            s.NetworkRecoveredFlash = false;
 
             // Pre-flight checklist reset (option #10). Each Trennen →
             // Verbinden cycle should require a fresh tick-through —
@@ -488,7 +534,47 @@ public sealed class AcarsClientService : IDisposable
         _state.LastLatencyMs = hb.LastLatencyMs;
         _state.AverageLatencyMs5Min = hb.AverageLatencyMs5Min;
         _state.FailureRatePercent5Min = hb.FailureRatePercent5Min;
-        _state.NetworkHealthState = hb.NetworkHealthState;
+
+        // A2: write seconds-since-last-outcome (clamped). Huge values
+        // (long.MaxValue = pre-first-heartbeat) get clamped to 0 so the
+        // UI doesn't display nonsense like "9223372036854775807 s".
+        var msSinceLast = hb.TimeSinceLastOutcomeMs;
+        _state.TimeSinceLastOutcomeSec = msSinceLast >= long.MaxValue / 1000
+            ? 0
+            : msSinceLast / 1000;
+
+        // A2 recovery-flash: detect Offline → Online transition. The
+        // current state is read from hb directly (single read) and
+        // compared against the previous tick's value. Note we update
+        // _previousNetworkHealthState at the end of this method so the
+        // comparison uses the value-from-last-tick.
+        var currentHealth = hb.NetworkHealthState;
+        _state.NetworkHealthState = currentHealth;
+
+        if (_previousNetworkHealthState == "Offline" && currentHealth == "Online")
+        {
+            _logger.LogInformation("Network recovered (Offline → Online), flashing banner for 5s");
+            _state.NetworkRecoveredFlash = true;
+
+            // Replace any in-flight recovery-timer rather than stacking
+            // them. Multiple Offline → Online flips in quick succession
+            // (which shouldn't happen normally given the 2-min Offline
+            // threshold, but defensive) just reset the 5-second window.
+            _recoveryFlashTimer?.Stop();
+            _recoveryFlashTimer = new DispatcherTimer(DispatcherPriority.Background, _uiDispatcher)
+            {
+                Interval = TimeSpan.FromSeconds(5),
+            };
+            _recoveryFlashTimer.Tick += (_, _) =>
+            {
+                _state.NetworkRecoveredFlash = false;
+                _recoveryFlashTimer?.Stop();
+                _recoveryFlashTimer = null;
+            };
+            _recoveryFlashTimer.Start();
+        }
+
+        _previousNetworkHealthState = currentHealth;
     }
 
     private void OnReAuthRequired()
