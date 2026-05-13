@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Media;
 using System.Net.Http;
 using System.Runtime.InteropServices;
@@ -105,6 +106,58 @@ public sealed class AcarsClientService : IDisposable
     // or >50% failure-rate floor, so the flash is rare and meaningful.
     private string? _previousNetworkHealthState;
     private DispatcherTimer? _recoveryFlashTimer;
+
+    // ─── Sim-quit fast detection (Welle A — option A6) ──────────────────
+    //
+    // SimConnect's built-in ConnectionLost event fires when the SDK-level
+    // pipe is torn down, but in practice that detection can lag the
+    // actual MSFS process death by 10-30 seconds depending on how the
+    // sim exits (clean File→Exit vs hard crash vs task-kill). The poll-
+    // loop's RequestTelemetry calls also keep silently succeeding into
+    // a dead pipe for several seconds.
+    //
+    // A6 adds a proactive process-watch: every 5 seconds, the poll-loop
+    // checks whether any known simulator process is alive via
+    // Process.GetProcessesByName. When _simProcessWasRunning flips from
+    // true → false, we proactively transition to Error state with a
+    // clear "MSFS beendet" message — typically within 5 seconds of the
+    // process actually disappearing, well before SimConnect notices.
+    //
+    // Tracking semantics:
+    //   - null = haven't checked yet (first tick) OR sim was never seen
+    //   - true = we observed the sim process at least once recently
+    //   - false = we observed the sim was running before, now it's gone
+    //     (only reached via the true → false transition)
+    //
+    // Why nullable instead of a plain bool: distinguishes "first tick,
+    // sim was already missing" (we shouldn't flip to Error — the user
+    // may have started Verbinden before MSFS, see SimConnect's connect-
+    // path which already handles that case) from "we saw the sim, now
+    // it's gone" (THE case A6 cares about).
+    //
+    // Reset to null in StopAsync so the next Verbinden starts clean
+    // without inheriting state from the previous session.
+    private bool? _simProcessWasRunning;
+
+    /// <summary>
+    /// Known simulator process names (without .exe extension — matches
+    /// what <see cref="Process.GetProcessesByName"/> expects). Covers the
+    /// SimConnect-speaking sims we currently support; X-Plane is excluded
+    /// because it doesn't use SimConnect.
+    ///
+    /// We match ANY of these as "sim is running" — a pilot switching
+    /// between MSFS 2020 and MSFS 2024 mid-session shouldn't trigger a
+    /// false-positive Error flip just because the specific exe changed.
+    /// (The underlying SimConnect ConnectionLost would catch that
+    /// transition separately if it actually broke the pipe.)
+    /// </summary>
+    private static readonly string[] SimProcessNames =
+    {
+        "FlightSimulator",       // MSFS 2020 (and MSFS 2024 in some configurations)
+        "FlightSimulator2024",   // MSFS 2024 explicit
+        "fsx",                   // FSX / FSX:SE
+        "Prepar3D",              // P3D v4/v5
+    };
 
     /// <summary>
     /// True between <see cref="StartAsync"/> succeeding and <see cref="StopAsync"/>
@@ -350,6 +403,14 @@ public sealed class AcarsClientService : IDisposable
                 _recoveryFlashTimer = null;
             }
             _previousNetworkHealthState = null;
+
+            // A6 reset: clear sim-process-watch state so a fresh Start
+            // doesn't inherit "we saw the sim was running" from the
+            // previous session — even though Disconnect → Verbinden
+            // typically happens with the sim still alive, the next
+            // session re-establishes the observation from scratch and
+            // never compares against pre-Stop state.
+            _simProcessWasRunning = null;
 
             _heartbeat.HeartbeatSent -= OnHeartbeatSent;
             _heartbeat.HeartbeatFailed -= OnHeartbeatFailed;
@@ -750,6 +811,15 @@ public sealed class AcarsClientService : IDisposable
     private async Task PollLoopAsync(CancellationToken ct)
     {
         _logger.LogDebug("SimConnect poll-loop started");
+
+        // Tick counter for the A6 sim-process watch. Every 5th tick (5s
+        // at the 1Hz cadence) we additionally probe Process.GetProcessesByName
+        // — cheap enough that we could run it every tick, but 5s is
+        // sufficient resolution for "MSFS quit" notification and keeps
+        // the per-second hot-path doing only the SimConnect work it was
+        // already doing.
+        var tickCounter = 0;
+
         while (!ct.IsCancellationRequested)
         {
             try
@@ -765,10 +835,98 @@ public sealed class AcarsClientService : IDisposable
                 _logger.LogWarning(ex, "RequestTelemetry threw");
             }
 
+            // ─── A6: sim-process watch ────────────────────────────────
+            // Runs every 5th tick (5s cadence). The check itself is
+            // ~5-10ms on a typical desktop — small enough to run on
+            // the poll-loop thread without spinning up an extra worker.
+            // All exceptions swallowed: if Process.GetProcessesByName
+            // throws (rare; usually permission issues on locked-down
+            // systems), we just skip this tick and try again in 5s.
+            if (++tickCounter >= 5)
+            {
+                tickCounter = 0;
+                try
+                {
+                    var isRunning = IsAnySimProcessRunning();
+                    if (_simProcessWasRunning == true && !isRunning)
+                    {
+                        // The interesting transition: we previously saw
+                        // the sim running, and now it's gone. Flip to
+                        // Error state proactively rather than waiting
+                        // for SimConnect to notice.
+                        _logger.LogWarning(
+                            "Sim process disappeared (proactive detection) — flipping to Error before SimConnect ConnectionLost fires");
+                        _ = MarshalToUi(() =>
+                        {
+                            // Don't overwrite an Error state that's
+                            // already in play (e.g., SimConnect's own
+                            // ConnectionLost might have fired a hair
+                            // earlier with a more specific message).
+                            // Either signal is correct — the first one
+                            // to set the message wins, which is fine
+                            // for the user's mental model.
+                            if (_state.ConnectionStatus != ConnectionStatus.Error)
+                            {
+                                _state.ConnectionStatus = ConnectionStatus.Error;
+                                _state.StatusMessage =
+                                    "MSFS beendet — Sim-Prozess nicht mehr erreichbar.";
+                            }
+                        });
+                    }
+                    _simProcessWasRunning = isRunning;
+                }
+                catch (Exception ex)
+                {
+                    // Process enumeration failed — just log and move on.
+                    // Don't reset _simProcessWasRunning to null on
+                    // failure because that would create a false-positive
+                    // sim-quit detection on the next successful tick
+                    // (true → null → true would skip the transition).
+                    _logger.LogDebug(ex, "Sim-process check threw, skipping this tick");
+                }
+            }
+
             try { await Task.Delay(TimeSpan.FromSeconds(1), ct); }
             catch (OperationCanceledException) { break; }
         }
         _logger.LogDebug("SimConnect poll-loop stopped");
+    }
+
+    /// <summary>
+    /// Probe whether any known simulator process is currently alive.
+    /// Returns true on the first match in <see cref="SimProcessNames"/>;
+    /// false if none match. Used by the A6 sim-quit-detection path in
+    /// <see cref="PollLoopAsync"/>.
+    ///
+    /// Process.GetProcessesByName returns Process[] which we must
+    /// dispose to release the underlying Win32 handle. The using-block
+    /// + the inner loop dispose pattern keeps that clean even on the
+    /// early-return path.
+    ///
+    /// We do NOT match on partial names or wildcards — exact-name only.
+    /// Reduces the risk of a false positive from, say, a "FlightSimulator
+    /// addon manager.exe" that's open but doesn't actually mean the sim
+    /// is running.
+    /// </summary>
+    private static bool IsAnySimProcessRunning()
+    {
+        foreach (var name in SimProcessNames)
+        {
+            var matches = Process.GetProcessesByName(name);
+            try
+            {
+                if (matches.Length > 0) return true;
+            }
+            finally
+            {
+                // Always dispose the Process handles, even if we found
+                // a match and are returning early. Each Process instance
+                // holds a Win32 handle that won't be released until the
+                // GC runs without explicit Dispose.
+                foreach (var p in matches) p.Dispose();
+            }
+        }
+        return false;
     }
 
     // ─── Dispatcher helpers ──────────────────────────────────────────────
