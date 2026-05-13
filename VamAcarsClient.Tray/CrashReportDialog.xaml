@@ -1,0 +1,282 @@
+<Window x:Class="VamAcarsClient.Tray.CrashReportDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        mc:Ignorable="d"
+        Title="VAM ACARS Client — Fehler aufgetreten"
+        Width="620"
+        Height="640"
+        ResizeMode="CanResize"
+        WindowStartupLocation="CenterScreen"
+        ShowInTaskbar="True"
+        Background="#1c1c23"
+        Foreground="#e8e8ee"
+        FontFamily="Segoe UI">
+
+    <!--
+        Crash-report dialog (Welle A — option A5).
+
+        Shown by App.DispatcherUnhandledException when an unhandled
+        exception reaches the UI thread. The crash has already been
+        captured + written to %LOCALAPPDATA%\VamAcarsClient\reports\;
+        this dialog gives the user three paths forward:
+
+          1. "In Zwischenablage kopieren" — copies the JSON to the
+             clipboard so the user can paste it into a GitHub issue,
+             Discord bug-report channel, or email.
+          2. "Ordner öffnen" — opens the reports folder in Explorer
+             so the user can attach the .json file directly.
+          3. "Auf GitHub melden" — opens the repo's New Issue page
+             in the default browser. We can't pre-fill the body
+             reliably (URL-encoded JSON would balloon the URL past
+             GitHub's limit) so the button just opens the page and
+             a static instruction reminds the user to paste from
+             clipboard.
+
+        After any of those, the user can close the dialog. Closing
+        DOES NOT crash the app any harder than it already crashed —
+        the DispatcherUnhandledException handler marks the exception
+        as Handled=true so WPF doesn't tear down the window, and the
+        app continues running. The user may want to keep working;
+        the crash was likely a one-off in a single code path, not
+        a process-wide collapse.
+
+        Layout: header (one-line summary), report-text scroll, action
+        button row. Header text is bound from code-behind via the
+        ErrorSummary / ReportText fields.
+    -->
+    <Window.Resources>
+        <SolidColorBrush x:Key="BgPrimary" Color="#1c1c23" />
+        <SolidColorBrush x:Key="BgSecondary" Color="#25252e" />
+        <SolidColorBrush x:Key="BorderMuted" Color="#34343f" />
+        <SolidColorBrush x:Key="TextPrimary" Color="#e8e8ee" />
+        <SolidColorBrush x:Key="TextMuted" Color="#9090a0" />
+        <SolidColorBrush x:Key="AccentBlue" Color="#78c8ff" />
+        <SolidColorBrush x:Key="AccentRed" Color="#ff7a87" />
+        <SolidColorBrush x:Key="AccentYellow" Color="#f5c451" />
+    </Window.Resources>
+
+    <Grid Margin="20">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <!-- ─── Banner ─────────────────────────────────────────────── -->
+        <Border Grid.Row="0"
+                Background="{StaticResource BgSecondary}"
+                BorderBrush="{StaticResource AccentRed}"
+                BorderThickness="1"
+                CornerRadius="6"
+                Padding="16"
+                Margin="0,0,0,12">
+            <StackPanel>
+                <TextBlock Text="UNERWARTETER FEHLER"
+                           Foreground="{StaticResource AccentRed}"
+                           FontSize="11"
+                           FontWeight="SemiBold" />
+                <TextBlock x:Name="ErrorSummary"
+                           Text="(Fehlerdetails werden geladen…)"
+                           Foreground="{StaticResource TextPrimary}"
+                           FontSize="13"
+                           FontWeight="SemiBold"
+                           Margin="0,6,0,0"
+                           TextWrapping="Wrap" />
+                <TextBlock x:Name="ReportPathLine"
+                           Foreground="{StaticResource TextMuted}"
+                           FontSize="11"
+                           Margin="0,6,0,0"
+                           TextWrapping="Wrap" />
+            </StackPanel>
+        </Border>
+
+        <!-- ─── Instructions ───────────────────────────────────────── -->
+        <TextBlock Grid.Row="1"
+                   Margin="0,0,0,8"
+                   FontSize="12"
+                   Foreground="{StaticResource TextMuted}"
+                   TextWrapping="Wrap">
+            <Run>Ein Bericht wurde lokal gespeichert. Du kannst ihn kopieren oder den Ordner öffnen, dann auf GitHub melden — kein automatischer upload, du behältst die Kontrolle.</Run>
+        </TextBlock>
+
+        <!-- ─── Report scroll ──────────────────────────────────────── -->
+        <Border Grid.Row="2"
+                Background="{StaticResource BgSecondary}"
+                BorderBrush="{StaticResource BorderMuted}"
+                BorderThickness="1"
+                CornerRadius="6">
+            <!--
+                The report is shown as a read-only TextBox (not TextBlock)
+                so the user can select + copy chunks manually if they
+                only want a portion. Consolas + monospaced for JSON
+                readability. VerticalScrollBarVisibility=Auto keeps the
+                scrollbar out of the way when the report fits.
+            -->
+            <TextBox x:Name="ReportTextBox"
+                     IsReadOnly="True"
+                     AcceptsReturn="True"
+                     TextWrapping="NoWrap"
+                     VerticalScrollBarVisibility="Auto"
+                     HorizontalScrollBarVisibility="Auto"
+                     Background="Transparent"
+                     Foreground="{StaticResource TextPrimary}"
+                     BorderThickness="0"
+                     Padding="12"
+                     FontFamily="Consolas"
+                     FontSize="11"
+                     CaretBrush="{StaticResource AccentBlue}"
+                     SelectionBrush="{StaticResource AccentBlue}" />
+        </Border>
+
+        <!-- ─── Action row ─────────────────────────────────────────── -->
+        <StackPanel Grid.Row="3"
+                    Orientation="Horizontal"
+                    HorizontalAlignment="Right"
+                    Margin="0,12,0,0">
+
+            <Button x:Name="CopyButton"
+                    Click="OnCopyClick"
+                    Padding="14,6"
+                    Margin="0,0,8,0"
+                    Background="{StaticResource AccentBlue}"
+                    Foreground="{StaticResource BgPrimary}"
+                    FontSize="12"
+                    FontWeight="SemiBold"
+                    BorderThickness="0"
+                    Cursor="Hand"
+                    Content="In Zwischenablage kopieren"
+                    ToolTip="Kopiert den vollständigen Bericht als JSON in die Zwischenablage.">
+                <Button.Template>
+                    <ControlTemplate TargetType="Button">
+                        <Border Background="{TemplateBinding Background}"
+                                CornerRadius="4"
+                                Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Center"
+                                              VerticalAlignment="Center"
+                                              TextElement.Foreground="{TemplateBinding Foreground}" />
+                        </Border>
+                    </ControlTemplate>
+                </Button.Template>
+                <Button.Style>
+                    <Style TargetType="Button">
+                        <Style.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter Property="Opacity" Value="0.85" />
+                            </Trigger>
+                        </Style.Triggers>
+                    </Style>
+                </Button.Style>
+            </Button>
+
+            <Button x:Name="OpenFolderButton"
+                    Click="OnOpenFolderClick"
+                    Padding="14,6"
+                    Margin="0,0,8,0"
+                    Background="{StaticResource BgSecondary}"
+                    Foreground="{StaticResource TextPrimary}"
+                    FontSize="12"
+                    BorderThickness="1"
+                    BorderBrush="{StaticResource BorderMuted}"
+                    Cursor="Hand"
+                    Content="Ordner öffnen"
+                    ToolTip="Öffnet den Ordner mit allen Crash-Berichten im Explorer.">
+                <Button.Template>
+                    <ControlTemplate TargetType="Button">
+                        <Border Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="4"
+                                Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Center"
+                                              VerticalAlignment="Center"
+                                              TextElement.Foreground="{TemplateBinding Foreground}" />
+                        </Border>
+                    </ControlTemplate>
+                </Button.Template>
+                <Button.Style>
+                    <Style TargetType="Button">
+                        <Style.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter Property="Background" Value="{StaticResource BgPrimary}" />
+                            </Trigger>
+                        </Style.Triggers>
+                    </Style>
+                </Button.Style>
+            </Button>
+
+            <Button x:Name="GitHubButton"
+                    Click="OnGitHubClick"
+                    Padding="14,6"
+                    Margin="0,0,8,0"
+                    Background="{StaticResource BgSecondary}"
+                    Foreground="{StaticResource TextPrimary}"
+                    FontSize="12"
+                    BorderThickness="1"
+                    BorderBrush="{StaticResource BorderMuted}"
+                    Cursor="Hand"
+                    Content="Auf GitHub melden"
+                    ToolTip="Öffnet die GitHub-Issues-Seite. Bitte den Bericht aus der Zwischenablage einfügen.">
+                <Button.Template>
+                    <ControlTemplate TargetType="Button">
+                        <Border Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="4"
+                                Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Center"
+                                              VerticalAlignment="Center"
+                                              TextElement.Foreground="{TemplateBinding Foreground}" />
+                        </Border>
+                    </ControlTemplate>
+                </Button.Template>
+                <Button.Style>
+                    <Style TargetType="Button">
+                        <Style.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter Property="Background" Value="{StaticResource BgPrimary}" />
+                            </Trigger>
+                        </Style.Triggers>
+                    </Style>
+                </Button.Style>
+            </Button>
+
+            <Button x:Name="CloseButton"
+                    Click="OnCloseClick"
+                    Padding="14,6"
+                    Background="Transparent"
+                    Foreground="{StaticResource TextMuted}"
+                    FontSize="12"
+                    BorderThickness="1"
+                    BorderBrush="{StaticResource BorderMuted}"
+                    Cursor="Hand"
+                    Content="Schließen"
+                    IsCancel="True">
+                <Button.Template>
+                    <ControlTemplate TargetType="Button">
+                        <Border Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="4"
+                                Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Center"
+                                              VerticalAlignment="Center"
+                                              TextElement.Foreground="{TemplateBinding Foreground}" />
+                        </Border>
+                    </ControlTemplate>
+                </Button.Template>
+                <Button.Style>
+                    <Style TargetType="Button">
+                        <Style.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter Property="Background" Value="{StaticResource BgPrimary}" />
+                            </Trigger>
+                        </Style.Triggers>
+                    </Style>
+                </Button.Style>
+            </Button>
+        </StackPanel>
+    </Grid>
+</Window>

@@ -483,6 +483,26 @@ public partial class App : Application
         State.PropertyChanged += OnStatePropertyChanged;
         UpdateTrayIcon();
 
+        // ─── Crash-report hook (Welle A — A5) ─────────────────────────
+        // Catch unhandled UI-thread exceptions, write a structured
+        // report to disk, and show the user a dialog with paths
+        // forward (copy report, open folder, open GitHub issues).
+        // The handler marks the exception as Handled=true so the
+        // process keeps running — most WPF dispatcher exceptions
+        // are recoverable (a single click handler threw, but the
+        // rest of the app is fine). Truly catastrophic crashes
+        // (StackOverflow, AccessViolation) bypass this path because
+        // they're considered fatal by .NET; we don't try to handle
+        // them.
+        //
+        // We also hook AppDomain.UnhandledException for background-
+        // thread crashes that don't reach the dispatcher. Those CAN'T
+        // be marked as handled (the process is going down regardless)
+        // but we can still write the report so the user has the
+        // forensics next launch.
+        DispatcherUnhandledException += OnDispatcherUnhandledException;
+        AppDomain.CurrentDomain.UnhandledException += OnAppDomainUnhandledException;
+
         _logger.LogInformation(
             "Tray icon initialized. Token present: {HasToken}, Service ready",
             State.HasToken);
@@ -1096,6 +1116,15 @@ public partial class App : Application
         // the OnExit ordering explicit.
         State.PropertyChanged -= OnStatePropertyChanged;
 
+        // Unsubscribe crash-handler hooks symmetrically. Both events
+        // can outlive App in some shutdown paths (the framework
+        // doesn't auto-clean managed-event subscriptions on
+        // Application teardown), so unhooking explicitly here
+        // prevents the rare case where a background-thread crash
+        // during OnExit cleanup tries to touch a half-disposed App.
+        DispatcherUnhandledException -= OnDispatcherUnhandledException;
+        AppDomain.CurrentDomain.UnhandledException -= OnAppDomainUnhandledException;
+
         // Service first — if it's still running, kick the cancellation
         // tokens so the SimConnect poll-loop and HeartbeatService stop
         // scheduling new work. Dispose() is best-effort sync teardown
@@ -1123,5 +1152,160 @@ public partial class App : Application
         _loggerFactory?.Dispose();
 
         base.OnExit(e);
+    }
+
+    /// <summary>
+    /// Welle A — A5 crash-handler for UI-thread exceptions. Captures
+    /// the exception into a structured report, surfaces the
+    /// <see cref="CrashReportDialog"/>, and marks the exception as
+    /// Handled so the process keeps running.
+    ///
+    /// Re-entrancy guard: if the crash-handler itself throws while
+    /// writing the report or showing the dialog, the outer
+    /// try/catch logs the secondary failure and lets the original
+    /// exception propagate (Handled stays false). Better to crash
+    /// loudly than swallow + double-fault.
+    ///
+    /// We use a sentinel <see cref="_crashHandlerActive"/> flag to
+    /// prevent infinite recursion: if the dialog ITSELF throws and
+    /// the exception reaches the dispatcher again, we don't try to
+    /// show another dialog — that would loop forever on a deep
+    /// failure (e.g. graphics-stack collapse). Second-level crashes
+    /// log + bubble.
+    /// </summary>
+    private void OnDispatcherUnhandledException(
+        object sender,
+        System.Windows.Threading.DispatcherUnhandledExceptionEventArgs e)
+    {
+        if (_crashHandlerActive)
+        {
+            // Already in the middle of handling a crash and a second
+            // one fired. Don't recurse — let the framework do its
+            // normal teardown.
+            _logger?.LogError(e.Exception, "Secondary unhandled exception inside crash handler — letting it propagate");
+            return;
+        }
+
+        try
+        {
+            _crashHandlerActive = true;
+            _logger?.LogError(e.Exception, "Unhandled dispatcher exception — capturing crash report");
+
+            var snapshot = BuildAppContextSnapshot();
+            var writer = new CrashReportWriter(
+                Config,
+                _loggerFactory?.CreateLogger<CrashReportWriter>());
+            var result = writer.Capture(e.Exception, snapshot);
+
+            // Build a one-line summary for the dialog header. We trim
+            // the message to keep the header readable even when the
+            // exception's Message is multi-paragraph.
+            var summary = $"{e.Exception.GetType().Name}: {Truncate(e.Exception.Message, 200)}";
+
+            var dialog = new CrashReportDialog(result, summary);
+            // Use Owner=MainWindow if the window is alive + visible,
+            // otherwise standalone. The dialog gracefully handles
+            // either case.
+            if (_mainWindow is not null && _mainWindow.IsVisible)
+            {
+                dialog.Owner = _mainWindow;
+            }
+            dialog.ShowDialog();
+
+            // Mark as Handled so WPF doesn't tear down. The user has
+            // acknowledged the crash; we can keep running.
+            e.Handled = true;
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogError(ex, "Crash handler itself threw — letting original exception propagate");
+            // Leave Handled=false so the framework's default behavior
+            // (tear down the app) takes over.
+        }
+        finally
+        {
+            _crashHandlerActive = false;
+        }
+    }
+
+    /// <summary>
+    /// Backstop for crashes that don't reach the WPF dispatcher
+    /// (background threads, finalizers). These ARE going to terminate
+    /// the process — IsTerminating=true on the args reflects that —
+    /// so we just write the report for post-mortem analysis. No
+    /// dialog because the process is collapsing behind us; the user
+    /// will see the report next launch.
+    ///
+    /// The handler runs on whatever thread threw, NOT the UI thread,
+    /// so we can't reliably show WPF UI here. Just IO and logging.
+    /// </summary>
+    private void OnAppDomainUnhandledException(object sender, UnhandledExceptionEventArgs e)
+    {
+        if (e.ExceptionObject is not Exception ex) return;
+
+        try
+        {
+            _logger?.LogCritical(ex,
+                "Unhandled background-thread exception (IsTerminating={IsTerminating}) — capturing crash report",
+                e.IsTerminating);
+
+            var snapshot = BuildAppContextSnapshot();
+            var writer = new CrashReportWriter(
+                Config,
+                _loggerFactory?.CreateLogger<CrashReportWriter>());
+            writer.Capture(ex, snapshot);
+        }
+        catch
+        {
+            // Last-ditch — log via Serilog directly. Even that may
+            // fail if the process is already disintegrating; nothing
+            // more we can do.
+            try { Log.Fatal(ex, "AppDomain unhandled exception, crash handler itself failed"); }
+            catch { /* give up */ }
+        }
+    }
+
+    /// <summary>
+    /// Re-entrancy guard for the crash handler. See
+    /// <see cref="OnDispatcherUnhandledException"/> for rationale.
+    /// </summary>
+    private bool _crashHandlerActive;
+
+    /// <summary>
+    /// Build a minimal app-state snapshot for inclusion in crash
+    /// reports. Wrapped in a try/catch so a property-getter throwing
+    /// can't double-fault the crash handler — falls back to a null
+    /// snapshot which the writer handles fine.
+    /// </summary>
+    private AppContextSnapshot? BuildAppContextSnapshot()
+    {
+        try
+        {
+            return new AppContextSnapshot(
+                ConnectionStatus: State.ConnectionStatus.ToString(),
+                HasToken: State.HasToken,
+                DetectedSimulator: State.DetectedSimulator,
+                AircraftType: State.AircraftType,
+                HeartbeatsSent: State.HeartbeatsSent,
+                HeartbeatsFailed: State.HeartbeatsFailed,
+                StatusMessage: State.StatusMessage);
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogDebug(ex, "BuildAppContextSnapshot threw — using null snapshot");
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Truncate a string to max-length with an ellipsis when needed.
+    /// Used for crash-summary in the dialog header — full message is
+    /// in the report body, the summary just needs to fit on screen.
+    /// </summary>
+    private static string Truncate(string? value, int max)
+    {
+        if (string.IsNullOrEmpty(value)) return string.Empty;
+        if (value.Length <= max) return value;
+        return value[..(max - 1)] + "…";
     }
 }
