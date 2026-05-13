@@ -1,4 +1,5 @@
 ﻿using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
@@ -87,6 +88,46 @@ public sealed class HeartbeatService : IDisposable
     private DateTimeOffset? _blockOffAt;
     private int? _fuelAtBlockOff;
 
+    // ─── Telemetry-tab tracking (Welle A — option A1) ────────────────────
+    //
+    // Rolling-window of outcomes for the last 5 minutes. Each entry is a
+    // (timestamp, isSuccess, latencyMs) tuple. The window self-trims to
+    // 5 min on every read of the aggregate properties — no background
+    // cleanup task needed (the queue lives in the same process as the
+    // heartbeat-loop and reads are infrequent).
+    //
+    // Why ConcurrentQueue<(...)>: the producer is the single-flight
+    // drain-loop, the consumers are public getters called from the UI
+    // thread. Lock-free enqueue/dequeue is the simplest correct primitive
+    // for a single-producer-multi-reader queue with FIFO semantics.
+    //
+    // Why also store individual latency separately: the UI wants to show
+    // "last latency" prominently (most-recent-tick figure). Walking the
+    // history every render to find the newest success-tuple would be
+    // wasteful — _lastLatencyMs is a hot path that gets updated in O(1)
+    // on every successful send.
+    //
+    // Window-size choice (5 min): long enough that the average smooths
+    // over network jitter and short network blips, short enough that
+    // when conditions improve the figures recover within the same
+    // session. 60 entries at 5-sec intervals would be too small (no
+    // smoothing of a single 2-sec outlier); 30 min would be too sticky
+    // for a session that just started.
+    private readonly ConcurrentQueue<HeartbeatOutcome> _outcomeHistory = new();
+    private long _lastLatencyMs;
+    private DateTimeOffset _lastOutcomeAt;
+
+    /// <summary>
+    /// Window for rolling stats (failure-rate, average-latency). Heartbeats
+    /// older than this are dropped from the history on next aggregate read.
+    /// </summary>
+    private static readonly TimeSpan StatsWindow = TimeSpan.FromMinutes(5);
+
+    private readonly record struct HeartbeatOutcome(
+        DateTimeOffset At,
+        bool Success,
+        long LatencyMs);
+
     /// <summary>
     /// JSON-options for heartbeat serialization. Critical setting:
     /// DefaultIgnoreCondition.WhenWritingNull — Zod's `.optional()` on
@@ -161,6 +202,137 @@ public sealed class HeartbeatService : IDisposable
 
     public int QueuedCount => _queue.Count;
 
+    // ─── Telemetry-tab public getters (Welle A — option A1) ────────────
+    //
+    // These are read from the UI dispatcher on a DispatcherTimer tick, so
+    // they need to be cheap. The trim-on-read pattern keeps the history
+    // bounded without a background task: typical window has 150 entries
+    // (5 min × 30 heartbeats/min at 2-sec cadence), Walk is O(n).
+    //
+    // All four getters share the same trim — calling all four in a row
+    // (which the UI does once per tick) trims the queue four times in
+    // sequence, which is fine because each trim is O(k) where k is the
+    // number of expired entries (usually 0-2).
+
+    /// <summary>
+    /// Latency of the most recent successful heartbeat send, in ms.
+    /// Returns 0 if no successful send has happened yet (fresh start
+    /// or session that never reached the server).
+    /// </summary>
+    public long LastLatencyMs => Interlocked.Read(ref _lastLatencyMs);
+
+    /// <summary>
+    /// Average latency over successful sends in the last 5 minutes, in
+    /// ms. Returns 0 if no successful sends have happened in the window.
+    /// </summary>
+    public long AverageLatencyMs5Min
+    {
+        get
+        {
+            TrimOutcomeHistory();
+            long total = 0;
+            int count = 0;
+            // Snapshot via ToArray to avoid enumeration-during-modification.
+            // ConcurrentQueue.ToArray is documented as a moment-in-time copy.
+            foreach (var o in _outcomeHistory.ToArray())
+            {
+                if (o.Success)
+                {
+                    total += o.LatencyMs;
+                    count++;
+                }
+            }
+            return count > 0 ? total / count : 0;
+        }
+    }
+
+    /// <summary>
+    /// Failure-rate over the last 5 minutes, as integer percent (0-100).
+    /// A failure is any outcome with Success=false (network error, 4xx
+    /// payload-reject, 5xx server-error). Returns 0 if no outcomes in
+    /// the window (uninitialized state, not "everything's fine").
+    /// </summary>
+    public int FailureRatePercent5Min
+    {
+        get
+        {
+            TrimOutcomeHistory();
+            int total = 0;
+            int failed = 0;
+            foreach (var o in _outcomeHistory.ToArray())
+            {
+                total++;
+                if (!o.Success) failed++;
+            }
+            return total > 0 ? (failed * 100) / total : 0;
+        }
+    }
+
+    /// <summary>
+    /// Coarse network-health classification derived from the same
+    /// rolling window. Three buckets, chosen for UI legibility (one
+    /// color per state rather than a percentage that pilots would have
+    /// to interpret mid-flight):
+    ///
+    /// - "Online":   ≤10% failure-rate AND last outcome within 30s
+    /// - "Degraded": 10-50% failure-rate OR last outcome 30s-2min ago
+    /// - "Offline":  >50% failure-rate OR last outcome > 2min ago
+    ///
+    /// "Unknown" is returned if no outcomes have been recorded yet.
+    /// </summary>
+    public string NetworkHealthState
+    {
+        get
+        {
+            TrimOutcomeHistory();
+            if (_outcomeHistory.IsEmpty) return "Unknown";
+
+            var failureRate = FailureRatePercent5Min;
+            var sinceLast = DateTimeOffset.UtcNow - _lastOutcomeAt;
+
+            if (sinceLast > TimeSpan.FromMinutes(2)) return "Offline";
+            if (sinceLast > TimeSpan.FromSeconds(30)) return "Degraded";
+            if (failureRate > 50) return "Offline";
+            if (failureRate > 10) return "Degraded";
+            return "Online";
+        }
+    }
+
+    /// <summary>
+    /// Record an outcome for the rolling window. Called from
+    /// DrainQueueAsync on every send-attempt (success or failure).
+    /// Thread-safe via ConcurrentQueue.Enqueue.
+    /// </summary>
+    private void RecordOutcome(bool success, long latencyMs)
+    {
+        var now = DateTimeOffset.UtcNow;
+        _outcomeHistory.Enqueue(new HeartbeatOutcome(now, success, latencyMs));
+        _lastOutcomeAt = now;
+        if (success)
+        {
+            // Interlocked-write so the LastLatencyMs getter (which uses
+            // Interlocked.Read) sees a consistent value rather than a
+            // torn read on 32-bit platforms. .NET doesn't guarantee
+            // atomicity for plain long-writes outside 64-bit.
+            Interlocked.Exchange(ref _lastLatencyMs, latencyMs);
+        }
+    }
+
+    /// <summary>
+    /// Drop outcomes older than StatsWindow. Called from each public
+    /// getter so the window stays self-cleaning. Single-flight on the
+    /// dequeue side because all readers happen on the UI dispatcher,
+    /// but the underlying ConcurrentQueue is safe even if not.
+    /// </summary>
+    private void TrimOutcomeHistory()
+    {
+        var cutoff = DateTimeOffset.UtcNow - StatsWindow;
+        while (_outcomeHistory.TryPeek(out var oldest) && oldest.At < cutoff)
+        {
+            _outcomeHistory.TryDequeue(out _);
+        }
+    }
+
     private async Task RunLoopAsync(CancellationToken ct)
     {
         while (!ct.IsCancellationRequested)
@@ -210,6 +382,13 @@ public sealed class HeartbeatService : IDisposable
         while (!ct.IsCancellationRequested && _queue.TryPeek(out var hb))
         {
             HttpResponseMessage response;
+            // Stopwatch wraps the entire SendAsync — DNS, TLS-handshake,
+            // request-build, network-roundtrip, server-processing, response.
+            // What we record as "latency" is the user-observable end-to-end
+            // time, which is what matters for telemetry-tab UX. If only
+            // the network-roundtrip was interesting, we'd hook into
+            // HttpClientHandler events, but this hot-path metric is fine.
+            var sw = Stopwatch.StartNew();
             try
             {
                 using var req = new HttpRequestMessage(HttpMethod.Post, "/api/acars/heartbeat")
@@ -228,15 +407,19 @@ public sealed class HeartbeatService : IDisposable
             {
                 // Network / DNS / timeout. Stop draining; retry next tick.
                 // Logged at Warning — recoverable, not a programmer error.
+                sw.Stop();
+                RecordOutcome(success: false, latencyMs: sw.ElapsedMilliseconds);
                 _logger.LogWarning(ex,
                     "Heartbeat send failed (network). Queued={QueuedCount}. Will retry.",
                     _queue.Count);
                 HeartbeatFailed?.Invoke($"Network-Fehler: {ex.Message}");
                 return;
             }
+            sw.Stop();
 
             if (response.IsSuccessStatusCode)
             {
+                RecordOutcome(success: true, latencyMs: sw.ElapsedMilliseconds);
                 _queue.TryDequeue(out _);
                 try
                 {
@@ -293,6 +476,14 @@ public sealed class HeartbeatService : IDisposable
                 errorBody = "<could not read response body>";
             }
             response.Dispose();
+
+            // Record telemetry-tab outcome ONCE for any non-2xx path. All
+            // three sub-paths (401 / 5xx / 4xx-drop) count as "failure"
+            // for failure-rate purposes — they're all heartbeats that
+            // didn't land. The latency captured is server-roundtrip-time
+            // (the server DID respond, just rejected), which is still
+            // a meaningful timing signal worth recording.
+            RecordOutcome(success: false, latencyMs: sw.ElapsedMilliseconds);
 
             if (status == 401)
             {

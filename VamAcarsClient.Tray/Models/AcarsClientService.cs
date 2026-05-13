@@ -63,6 +63,26 @@ public sealed class AcarsClientService : IDisposable
     private CancellationTokenSource? _pollCts;
     private Task? _pollTask;
 
+    // ─── Telemetry-tab UI poll (Welle A — option A1) ────────────────────
+    //
+    // DispatcherTimer (UI-thread, 2s cadence) reads telemetry-stats from
+    // HeartbeatService (LastLatencyMs, AverageLatencyMs5Min, FailureRate-
+    // Percent5Min, NetworkHealthState) and writes them onto AcarsClientState.
+    //
+    // Why a separate timer rather than updating on every HeartbeatSent
+    // event: NetworkHealthState transitions need to fire even when NO
+    // heartbeats are flowing (network died → "Offline" after 2 min). An
+    // event-driven approach would leave the UI stuck on the last-seen
+    // good state. The 2s tick is cheap enough that polling is fine, and
+    // it matches the heartbeat-cadence so the user sees ~1 update per
+    // heartbeat in steady state.
+    //
+    // Started after heartbeat.Start() succeeds, stopped/disposed at the
+    // top of StopAsync's teardown sequence (before the heartbeat itself
+    // is torn down — the timer reads from _heartbeat so it must stop
+    // first to avoid a null-deref).
+    private DispatcherTimer? _telemetryTimer;
+
     /// <summary>
     /// True between <see cref="StartAsync"/> succeeding and <see cref="StopAsync"/>
     /// returning. Used to gate Start (idempotent — second call is a no-op) and
@@ -190,6 +210,20 @@ public sealed class AcarsClientService : IDisposable
         heartbeat.Start();
         _heartbeat = heartbeat;
 
+        // ─── Telemetry-tab UI poll start (Welle A — option A1) ─────────
+        // Start the 2s DispatcherTimer that reads HeartbeatService's
+        // telemetry getters and writes them onto AcarsClientState. The
+        // first tick fires after the interval (2s), so the UI shows
+        // "0 ms / Unknown" briefly until the first poll completes —
+        // acceptable since no heartbeats will have landed in that window
+        // either.
+        _telemetryTimer = new DispatcherTimer(DispatcherPriority.Background, _uiDispatcher)
+        {
+            Interval = TimeSpan.FromSeconds(2),
+        };
+        _telemetryTimer.Tick += OnTelemetryTick;
+        _telemetryTimer.Start();
+
         // ─── 4. SimConnect poll-loop ───────────────────────────────────
         // SimConnectClient is request/response — we have to poll
         // RequestTelemetry() on a cadence to get fresh data into
@@ -268,6 +302,18 @@ public sealed class AcarsClientService : IDisposable
         // Heartbeat next — flushes its in-flight task and stops scheduling.
         if (_heartbeat is not null)
         {
+            // Stop telemetry-timer FIRST. Its Tick handler reads from
+            // _heartbeat (telemetry getters); leaving it running while
+            // we null out _heartbeat below would risk a tick firing
+            // mid-disposal. Stop() blocks no further ticks, the
+            // detach + null-out then dispose without race.
+            if (_telemetryTimer is not null)
+            {
+                _telemetryTimer.Stop();
+                _telemetryTimer.Tick -= OnTelemetryTick;
+                _telemetryTimer = null;
+            }
+
             _heartbeat.HeartbeatSent -= OnHeartbeatSent;
             _heartbeat.HeartbeatFailed -= OnHeartbeatFailed;
             _heartbeat.ReAuthRequired -= OnReAuthRequired;
@@ -297,6 +343,15 @@ public sealed class AcarsClientService : IDisposable
                 s.StatusMessage = "Getrennt.";
             }
             s.HeartbeatsQueued = 0;
+
+            // Telemetry-tab reset (Welle A — option A1). The four metrics
+            // would otherwise stay frozen at the last-seen values from
+            // before disconnect, misleading the user. Reset to defaults
+            // so a fresh Verbinden starts clean.
+            s.LastLatencyMs = 0;
+            s.AverageLatencyMs5Min = 0;
+            s.FailureRatePercent5Min = 0;
+            s.NetworkHealthState = "Unknown";
 
             // Pre-flight checklist reset (option #10). Each Trennen →
             // Verbinden cycle should require a fresh tick-through —
@@ -411,6 +466,29 @@ public sealed class AcarsClientService : IDisposable
             }
             _state.StatusMessage = $"Heartbeat fehlgeschlagen: {reason}";
         });
+    }
+
+    /// <summary>
+    /// DispatcherTimer tick handler for the telemetry-tab (Welle A — option A1).
+    /// Reads four cheap getters from <see cref="HeartbeatService"/> and writes
+    /// the snapshot onto <see cref="AcarsClientState"/>. Runs on the UI thread
+    /// (DispatcherTimer guarantees that), so direct property assignment is safe
+    /// without MarshalToUi.
+    ///
+    /// Defensive null-guard on _heartbeat: even though we stop the timer before
+    /// nulling _heartbeat in StopAsync, there's a tiny race where a tick can be
+    /// queued just as Stop() runs. The null-check makes that race a no-op
+    /// rather than a NullReferenceException in the dispatcher.
+    /// </summary>
+    private void OnTelemetryTick(object? sender, EventArgs e)
+    {
+        var hb = _heartbeat;
+        if (hb is null) return;
+
+        _state.LastLatencyMs = hb.LastLatencyMs;
+        _state.AverageLatencyMs5Min = hb.AverageLatencyMs5Min;
+        _state.FailureRatePercent5Min = hb.FailureRatePercent5Min;
+        _state.NetworkHealthState = hb.NetworkHealthState;
     }
 
     private void OnReAuthRequired()

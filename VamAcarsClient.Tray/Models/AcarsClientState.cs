@@ -268,6 +268,70 @@ public class AcarsClientState : INotifyPropertyChanged
         set => SetField(ref _heartbeatsQueued, value);
     }
 
+    // ─── Telemetry-tab (Welle A — option A1) ──────────────────────────
+    //
+    // Latency / failure-rate / network-health snapshots refreshed by
+    // AcarsClientService.OnTelemetryTick (DispatcherTimer, 2s). All
+    // four feed the expanded HEARTBEATS card in MainWindow.xaml — see
+    // the "TELEMETRIE" sub-section there.
+    //
+    // Why mirror state rather than bind directly to HeartbeatService:
+    // the service lives in Core and uses DateTimeOffset / Interlocked.Read
+    // primitives that don't speak to WPF's PropertyChanged plumbing. The
+    // service exposes plain getters; this state-class wraps them with
+    // INotifyPropertyChanged so the XAML bindings refresh cleanly.
+    //
+    // All four reset to defaults on disconnect (see AcarsClientService.
+    // ResetHeartbeatCounters which now also clears these).
+
+    private long _lastLatencyMs;
+    /// <summary>
+    /// Latest successful heartbeat round-trip time, in ms. 0 when not
+    /// connected or no successful send has happened yet.
+    /// </summary>
+    public long LastLatencyMs
+    {
+        get => _lastLatencyMs;
+        set => SetField(ref _lastLatencyMs, value);
+    }
+
+    private long _averageLatencyMs5Min;
+    /// <summary>
+    /// Rolling 5-minute average of successful-send latencies, in ms.
+    /// Smooths over jitter so the displayed number is stable enough to
+    /// glance at mid-flight.
+    /// </summary>
+    public long AverageLatencyMs5Min
+    {
+        get => _averageLatencyMs5Min;
+        set => SetField(ref _averageLatencyMs5Min, value);
+    }
+
+    private int _failureRatePercent5Min;
+    /// <summary>
+    /// Percentage (0-100) of heartbeats in the last 5 minutes that
+    /// failed for any reason (network, 401, 5xx, 4xx-drop). 0 means
+    /// either "all good" OR "no data yet" — distinguish via
+    /// NetworkHealthState == "Unknown".
+    /// </summary>
+    public int FailureRatePercent5Min
+    {
+        get => _failureRatePercent5Min;
+        set => SetField(ref _failureRatePercent5Min, value);
+    }
+
+    private string _networkHealthState = "Unknown";
+    /// <summary>
+    /// Coarse health classification — "Online", "Degraded", "Offline",
+    /// or "Unknown". UI color-codes based on this string. See
+    /// HeartbeatService.NetworkHealthState for the bucketing rules.
+    /// </summary>
+    public string NetworkHealthState
+    {
+        get => _networkHealthState;
+        set => SetField(ref _networkHealthState, value);
+    }
+
     // ─── User preferences ────────────────────────────────────────────
 
     private bool _autoStartEnabled;

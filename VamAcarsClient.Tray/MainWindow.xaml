@@ -962,6 +962,104 @@
                             <TextBlock Grid.Row="1" Grid.Column="2" HorizontalAlignment="Center"
                                        Text="queued" Style="{StaticResource FieldLabel}" />
                         </Grid>
+
+                        <!--
+                            Telemetrie-tab (Welle A — option A1). Progressive
+                            disclosure via Expander: collapsed by default so
+                            the card stays compact for pilots who just want
+                            the three big numbers (sent/failed/queued), but
+                            one click away when troubleshooting connection
+                            quality.
+
+                            Bindings refresh on AcarsClientService's 2s
+                            DispatcherTimer tick. NetworkHealthState is the
+                            most actionable signal — color-coded via DataTrigger
+                            so a glance tells the pilot if the link is healthy:
+                            green=Online (under 30s ago + ≤10% failure),
+                            yellow=Degraded, red=Offline, muted=Unknown.
+
+                            All four lines bind directly to AcarsClientState
+                            properties; no converters in the chain so the UI
+                            re-renders the moment the timer writes the new
+                            value via PropertyChanged.
+                        -->
+                        <Expander Margin="0,12,0,0"
+                                  Header="Details anzeigen"
+                                  Foreground="{StaticResource TextMuted}"
+                                  FontSize="11"
+                                  IsExpanded="False">
+                            <Grid Margin="0,8,0,0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                </Grid.RowDefinitions>
+
+                                <TextBlock Grid.Row="0" Grid.Column="0"
+                                           Text="Letzte Latenz"
+                                           Style="{StaticResource FieldLabel}" Margin="0,0,0,4" />
+                                <TextBlock Grid.Row="0" Grid.Column="1"
+                                           Text="{Binding LastLatencyMs, StringFormat={}{0} ms}"
+                                           Style="{StaticResource FieldValue}" Margin="0,0,0,4" />
+
+                                <TextBlock Grid.Row="1" Grid.Column="0"
+                                           Text="Ø Latenz (5min)"
+                                           Style="{StaticResource FieldLabel}" Margin="0,0,0,4" />
+                                <TextBlock Grid.Row="1" Grid.Column="1"
+                                           Text="{Binding AverageLatencyMs5Min, StringFormat={}{0} ms}"
+                                           Style="{StaticResource FieldValue}" Margin="0,0,0,4" />
+
+                                <TextBlock Grid.Row="2" Grid.Column="0"
+                                           Text="Fehlerrate (5min)"
+                                           Style="{StaticResource FieldLabel}" Margin="0,0,0,4" />
+                                <TextBlock Grid.Row="2" Grid.Column="1"
+                                           Text="{Binding FailureRatePercent5Min, StringFormat={}{0}%}"
+                                           Style="{StaticResource FieldValue}" Margin="0,0,0,4" />
+
+                                <TextBlock Grid.Row="3" Grid.Column="0"
+                                           Text="Netzwerk"
+                                           Style="{StaticResource FieldLabel}" />
+                                <!--
+                                    NetworkHealthState colored via DataTrigger.
+                                    Style override on TextBlock (not the
+                                    shared FieldValue) because we need a
+                                    Style.Triggers block — applying triggers
+                                    via Style.Triggers on FieldValue would
+                                    leak the color logic to every other
+                                    FieldValue in the window. The base
+                                    properties (font, alignment) mirror
+                                    FieldValue manually.
+                                -->
+                                <TextBlock Grid.Row="3" Grid.Column="1"
+                                           Text="{Binding NetworkHealthState}"
+                                           FontSize="13"
+                                           VerticalAlignment="Center"
+                                           HorizontalAlignment="Right"
+                                           FontFamily="Consolas">
+                                    <TextBlock.Style>
+                                        <Style TargetType="TextBlock">
+                                            <Setter Property="Foreground" Value="{StaticResource TextMuted}" />
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding NetworkHealthState}" Value="Online">
+                                                    <Setter Property="Foreground" Value="{StaticResource AccentGreen}" />
+                                                </DataTrigger>
+                                                <DataTrigger Binding="{Binding NetworkHealthState}" Value="Degraded">
+                                                    <Setter Property="Foreground" Value="{StaticResource AccentYellow}" />
+                                                </DataTrigger>
+                                                <DataTrigger Binding="{Binding NetworkHealthState}" Value="Offline">
+                                                    <Setter Property="Foreground" Value="{StaticResource AccentRed}" />
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </TextBlock.Style>
+                                </TextBlock>
+                            </Grid>
+                        </Expander>
                     </StackPanel>
                 </Border>
 
