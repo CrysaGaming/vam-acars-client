@@ -503,6 +503,36 @@ public partial class App : Application
         DispatcherUnhandledException += OnDispatcherUnhandledException;
         AppDomain.CurrentDomain.UnhandledException += OnAppDomainUnhandledException;
 
+        // ─── Logs-cleanup job (Welle A — A7) ───────────────────────────
+        // Fire-and-forget background cleanup of log files older than 30
+        // days. Runs once per app launch on a Task.Run worker so it
+        // can't slow startup even if the directory has hundreds of
+        // files. The active log file for today is held open by Serilog
+        // and will throw IOException on delete — that's handled
+        // gracefully inside the service (skipped + logged at Debug).
+        //
+        // We don't await: the result (number of files deleted) is
+        // logged from inside the service, and the user has no reason
+        // to know whether cleanup ran. Discarded with `_ =` so the
+        // compiler doesn't complain about the unobserved task.
+        _ = Task.Run(() =>
+        {
+            try
+            {
+                LogsCleanupService.CleanupOldLogs(
+                    Config,
+                    _loggerFactory?.CreateLogger(typeof(LogsCleanupService).FullName!));
+            }
+            catch (Exception ex)
+            {
+                // Defensive — the service itself swallows everything,
+                // but a future refactor could change that. We never
+                // want a logs-cleanup failure to surface anywhere
+                // visible to the user.
+                _logger?.LogWarning(ex, "LogsCleanupService.CleanupOldLogs threw unexpectedly");
+            }
+        });
+
         _logger.LogInformation(
             "Tray icon initialized. Token present: {HasToken}, Service ready",
             State.HasToken);
