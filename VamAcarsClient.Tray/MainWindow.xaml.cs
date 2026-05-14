@@ -180,6 +180,115 @@ public partial class MainWindow : Window
                         ? null
                         : ArrivalBox.Text.Trim().ToUpperInvariant(),
                 };
+
+                // ─── Welle B / B4 phase 2C — booking + mismatch dialog ─
+                //
+                // Before calling StartAsync, fetch the user's active
+                // booking via /api/acars/active-booking. If a booking
+                // exists, compare its aircraft type against the sim-
+                // loaded DetectedAircraftType. On mismatch, show the
+                // AircraftSubstitutionDialog and route by disposition:
+                //
+                //   - "wrongLoaded"             → abort Verbinden so the
+                //                                 user can fix the sim
+                //   - "intentional"/"wrongBooking" → stage on State.Pending*
+                //                                 and continue with
+                //                                 StartAsync (which will
+                //                                 pick up the pending
+                //                                 substitution and ship
+                //                                 it on the first heartbeat)
+                //   - cancelled (X / Abbrechen) → abort Verbinden — user
+                //                                 isn't ready to commit
+                //
+                // The dialog is shown synchronously (ShowDialog blocks
+                // until the user closes it). That's fine here because
+                // we're already on the UI thread inside a button-click
+                // handler; the connect-flow is intended to gate
+                // anyway, and the dialog gives the pilot a moment to
+                // decide before heartbeats start.
+                //
+                // Skip-conditions (no dialog shown, just proceed):
+                //   - Booking fetch failed (logged but not fatal — the
+                //     pilot might still want to fly free-flight)
+                //   - No active booking on the account (free flight)
+                //   - Booking has no aircraft assignment (charter, type-
+                //     flexible route)
+                //   - DetectedAircraftType not available (user hasn't
+                //     clicked "Sim erkennen" yet — we don't fault them
+                //     here; the existing pre-flight checklist nags them
+                //     into running the probe)
+                //   - Aircraft types match (case-insensitive trim)
+                //
+                // Why fire FetchActiveBookingAsync from here rather than
+                // automatically when the user opens the window: many
+                // sessions are run-then-disconnect-then-rerun within
+                // minutes, and we'd rather pay one HTTP per Verbinden
+                // click than poll continuously. The Verbinden click is
+                // the moment the disposition matters most.
+                await service.FetchActiveBookingAsync();
+
+                var bookedType = app.State.ActiveBookingAircraftType?.Trim();
+                var flownType = app.State.DetectedAircraftType?.Trim();
+                var hasBooking = !string.IsNullOrWhiteSpace(bookedType);
+                var hasFlown = !string.IsNullOrWhiteSpace(flownType);
+                var typesDiffer = hasBooking && hasFlown
+                    && !string.Equals(bookedType, flownType, StringComparison.OrdinalIgnoreCase);
+
+                if (typesDiffer)
+                {
+                    // Compose pre-formatted "ICAO · REG" strings so the
+                    // dialog stays purely presentational.
+                    var bookedReg = app.State.ActiveBookingAircraftRegistration?.Trim();
+                    var flownReg = app.State.DetectedAircraftRegistration?.Trim();
+                    var bookedSummary = string.IsNullOrWhiteSpace(bookedReg)
+                        ? bookedType!
+                        : $"{bookedType} · {bookedReg}";
+                    var flownSummary = string.IsNullOrWhiteSpace(flownReg)
+                        ? flownType!
+                        : $"{flownType} · {flownReg}";
+
+                    var dialog = new AircraftSubstitutionDialog(bookedSummary, flownSummary)
+                    {
+                        Owner = this,
+                    };
+                    var result = dialog.ShowDialog();
+
+                    // Cancel-path: false (Abbrechen) or null (X-close).
+                    // Either way the user opted out of committing to a
+                    // disposition; do NOT proceed with Verbinden. Status
+                    // message lets them know why nothing happened.
+                    if (result != true || dialog.ChosenIntent is null)
+                    {
+                        app.State.StatusMessage =
+                            "Verbinden abgebrochen — Flugzeug-Diskrepanz nicht dispositioniert.";
+                        return;
+                    }
+
+                    // wrongLoaded: client-side abort. Pilot intends to
+                    // fix the loaded aircraft; no heartbeat should go
+                    // out. Status message routes them through the
+                    // expected next step (re-load aircraft in MSFS,
+                    // re-run Sim erkennen, click Verbinden again).
+                    if (dialog.ChosenIntent == "wrongLoaded")
+                    {
+                        app.State.StatusMessage =
+                            "Lade in MSFS das korrekte Flugzeug, dann erneut „Sim erkennen“ und „Verbinden“.";
+                        return;
+                    }
+
+                    // intentional or wrongBooking: stage the disposition
+                    // on State.Pending* so AcarsClientService.StartAsync
+                    // picks it up and forwards to HeartbeatService.
+                    // bookedType / flownType captured at this exact
+                    // moment — the snapshot the pilot saw when they
+                    // made the choice — even if the booking is later
+                    // edited or the sim-loaded plane changes.
+                    app.State.PendingSubstitutionIntent = dialog.ChosenIntent;
+                    app.State.PendingSubstitutionBookedType = bookedType;
+                    app.State.PendingSubstitutionFlownType = flownType;
+                    app.State.PendingSubstitutionReason = dialog.Reason;
+                }
+
                 await service.StartAsync(flightContext);
 
                 // Service started without throwing → the values the

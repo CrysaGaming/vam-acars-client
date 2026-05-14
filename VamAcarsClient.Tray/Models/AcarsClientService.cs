@@ -282,6 +282,43 @@ public sealed class AcarsClientService : IDisposable
         heartbeat.HeartbeatSent += OnHeartbeatSent;
         heartbeat.HeartbeatFailed += OnHeartbeatFailed;
         heartbeat.ReAuthRequired += OnReAuthRequired;
+        heartbeat.AircraftSubstitutionDelivered += OnAircraftSubstitutionDelivered;
+
+        // ─── B4 P2C: stage pending aircraft-substitution disposition ──
+        //
+        // If the pre-connect dialog flow set State.Pending* (because the
+        // pilot dispositioned a booked-vs-flown aircraft mismatch),
+        // forward the snapshot to the freshly-constructed HeartbeatService
+        // BEFORE heartbeat.Start() fires the first BuildHeartbeat call.
+        // Doing it after Start is racy: a heartbeat could be built and
+        // sent without the block.
+        //
+        // The state is mutated from the UI thread (MainWindow's connect
+        // handler), and we read it here on the calling thread; both
+        // accesses are serialized by C#'s memory model for the field
+        // reads (each property is a simple field load). No SetStateAsync
+        // round-trip is needed for a read.
+        //
+        // Null-check on intent gates the staging; the other three fields
+        // get safe defaults so a malformed state (intent set but booked/
+        // flown not) still produces a well-formed payload rather than a
+        // NullReferenceException — server-side validation will reject
+        // empty type strings if it ever happens.
+        if (!string.IsNullOrWhiteSpace(_state.PendingSubstitutionIntent))
+        {
+            var sub = new HeartbeatAircraftSubstitution
+            {
+                Intent = _state.PendingSubstitutionIntent!,
+                BookedAircraftType = _state.PendingSubstitutionBookedType ?? "",
+                FlownAircraftType = _state.PendingSubstitutionFlownType ?? "",
+                Reason = _state.PendingSubstitutionReason,
+            };
+            heartbeat.SetPendingAircraftSubstitution(sub);
+            _logger.LogInformation(
+                "B4 P2C: staged aircraft-substitution disposition on heartbeat (intent={Intent}, booked={Booked}, flown={Flown}, reason={Reason})",
+                sub.Intent, sub.BookedAircraftType, sub.FlownAircraftType,
+                sub.Reason ?? "(none)");
+        }
 
         heartbeat.Start();
         _heartbeat = heartbeat;
@@ -415,6 +452,7 @@ public sealed class AcarsClientService : IDisposable
             _heartbeat.HeartbeatSent -= OnHeartbeatSent;
             _heartbeat.HeartbeatFailed -= OnHeartbeatFailed;
             _heartbeat.ReAuthRequired -= OnReAuthRequired;
+            _heartbeat.AircraftSubstitutionDelivered -= OnAircraftSubstitutionDelivered;
             await _heartbeat.StopAsync();
             _heartbeat = null;
         }
@@ -587,6 +625,37 @@ public sealed class AcarsClientService : IDisposable
             }
             _state.StatusMessage = $"Heartbeat fehlgeschlagen: {reason}";
         });
+    }
+
+    /// <summary>
+    /// Welle B / B4 phase 2C — handler for HeartbeatService's
+    /// <see cref="HeartbeatService.AircraftSubstitutionDelivered"/> event.
+    ///
+    /// Fires once after the first heartbeat carrying the
+    /// `aircraftSubstitution` block has been successfully ACKed by the
+    /// server. The HeartbeatService has already atomically cleared its
+    /// internal `_pendingAircraftSubstitution` field via Interlocked.
+    /// CompareExchange; we mirror that on the UI side by clearing the
+    /// four State.Pending* fields so:
+    ///   - the UI no longer shows "Substitution wird gesendet" hints
+    ///   - a subsequent Trennen → Verbinden cycle starts clean
+    ///   - a re-staging from the dialog has well-defined initial state
+    ///
+    /// MarshalToUi because the event fires on the heartbeat-service's
+    /// background task; direct State mutation would breach the WPF
+    /// thread-affinity contract for INPC properties.
+    ///
+    /// Fire-and-forget marshal: we don't need to await the dispatcher
+    /// invocation. The event is one-shot per dialog interaction; even
+    /// if a tear-down race nulls _heartbeat between the event firing
+    /// and the dispatcher running, ClearPendingSubstitution is safe
+    /// (it's a pure state-mutation with no service-side dependencies).
+    /// </summary>
+    private void OnAircraftSubstitutionDelivered()
+    {
+        _logger.LogInformation(
+            "B4 P2C: aircraft-substitution delivered — clearing State.Pending*");
+        _ = MarshalToUi(() => _state.ClearPendingSubstitution());
     }
 
     /// <summary>
