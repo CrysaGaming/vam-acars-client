@@ -117,6 +117,33 @@ public sealed class HeartbeatService : IDisposable
     private long _lastLatencyMs;
     private DateTimeOffset _lastOutcomeAt;
 
+    // ─── Rate-limit state (Welle C — option C6) ──────────────────────────
+    //
+    // When the server returns 429 it includes a Retry-After header
+    // (RFC 9110 §10.2.3) with the seconds-until-window-reset value.
+    // We respect that pause and gate the drain-loop on it. Without the
+    // gate, the client would just keep retrying immediately, each retry
+    // incrementing the server's bucket count further and extending the
+    // rate-limit window indefinitely. With the gate, the queue stays
+    // intact, no drain attempts happen during the pause, and a single
+    // drain-burst resumes after the window expires.
+    //
+    // Why a single field rather than a per-entry retry-after: the rate-
+    // limit is keyed by userId server-side, so it applies to ALL of
+    // this client's heartbeats uniformly. A pathological case might
+    // be a future server policy that varies by endpoint or payload,
+    // but for v1 the single-window assumption is correct.
+    //
+    // Threading: written from DrainQueueAsync (single-flight on the
+    // send-loop task), read from the same DrainQueueAsync. No external
+    // readers, so plain field access is safe. If we ever expose this
+    // to the UI for "rate-limited until X" display, an Interlocked
+    // read-pair (or a DateTimeOffset.UtcNow.Ticks long with Interlocked.
+    // Read) would be needed for safety on 32-bit platforms.
+    private DateTimeOffset? _rateLimitedUntil;
+    private int _consecutiveRateLimits;
+
+
     /// <summary>
     /// Window for rolling stats (failure-rate, average-latency). Heartbeats
     /// older than this are dropped from the history on next aggregate read.
@@ -447,6 +474,31 @@ public sealed class HeartbeatService : IDisposable
 
     private async Task DrainQueueAsync(CancellationToken ct)
     {
+        // ─── Rate-limit gate (Welle C — C6) ──────────────────────────────
+        //
+        // Bail out immediately if we're inside a server-imposed cool-down
+        // window. The queue stays intact (oldest at head; bounded by
+        // MaxQueueDepth so even a long pause won't blow memory). On the
+        // next tick after _rateLimitedUntil expires, we proceed normally
+        // and drain whatever's accumulated.
+        //
+        // CRITICAL: if we KEEP sending while rate-limited, every retry
+        // increments the server's bucket count (it counts ATTEMPTS not
+        // ACCEPTANCES, intentionally — see acarsRateLimitHeaders comment
+        // server-side). That would extend the window indefinitely and
+        // turn a self-recoverable 60s pause into a permanent block.
+        // The pause is what makes the rate-limit actually work; the
+        // 429-respect-Retry-After contract is enforced from both ends.
+        //
+        // When the cool-down expires we don't immediately clear the
+        // field — we just stop returning early. The field gets set
+        // again on the next 429 (if any) and otherwise stays as a
+        // historical record of the last cool-down, which is fine.
+        if (_rateLimitedUntil is { } until && DateTimeOffset.UtcNow < until)
+        {
+            return;
+        }
+
         // Single-flight: send one at a time so 401 handling stays clean.
         while (!ct.IsCancellationRequested && _queue.TryPeek(out var hb))
         {
@@ -589,6 +641,23 @@ public sealed class HeartbeatService : IDisposable
             {
                 errorBody = "<could not read response body>";
             }
+            // Welle C / C6 — capture the Retry-After header before
+            // disposing the response. Used by the 429 branch below.
+            // RFC 9110 §10.2.3 allows either delta-seconds OR HTTP-date;
+            // our server-side always emits delta-seconds (see
+            // acarsRateLimitHeaders), so int.TryParse is sufficient.
+            // Defensive default: 60 seconds matches the server's window
+            // size so if the header is somehow missing or malformed,
+            // we still back off for a full window's worth before retrying.
+            int retryAfterSec = 60;
+            if (response.Headers.TryGetValues("Retry-After", out var retryHeaderValues))
+            {
+                var first = retryHeaderValues.FirstOrDefault();
+                if (first is not null && int.TryParse(first, out var parsed) && parsed > 0)
+                {
+                    retryAfterSec = Math.Min(parsed, 600); // hard cap 10min
+                }
+            }
             response.Dispose();
 
             // Record telemetry-tab outcome ONCE for any non-2xx path. All
@@ -619,11 +688,67 @@ public sealed class HeartbeatService : IDisposable
                 return;
             }
 
-            // 4xx other than 401: payload is broken or rate-limited. Drop
-            // this entry to avoid spinning on it. Body usually contains
-            // the zod-validation issues — surfacing them makes debugging
-            // schema-mismatches a one-shot. Logged at Error because a
-            // schema-mismatch is a client bug, not a transient condition.
+            // ─── 429 Too Many Requests — Welle C / C6 ────────────────────
+            //
+            // Server has rate-limited this client. Behavior:
+            //   1. PRESERVE the queue entry (don't dequeue). Same payload
+            //      will retry after the cool-down expires — no data loss.
+            //   2. Set _rateLimitedUntil so future DrainQueueAsync calls
+            //      bail out early until the window expires (see the gate
+            //      at the top of this method).
+            //   3. Increment a diagnostic counter so repeated 429s are
+            //      visible in logs at higher severity if the pattern
+            //      persists (escalates to Error after 5 consecutive).
+            //   4. Return early — no more drain attempts this tick.
+            //
+            // Distinct from the generic 4xx-drop below because 429 is the
+            // ONE 4xx status where the payload is fine and the only
+            // problem is timing — dropping would lose perfectly-valid
+            // heartbeats and amplify the rate-limit problem (queue grows
+            // unboundedly while we drop, then floods the server when we
+            // resume). Preserve + pause is the correct cooperative
+            // response.
+            //
+            // Note: timestamp staleness. Heartbeats carry a client-side
+            // timestamp; server rejects > 5min old. If we're rate-limited
+            // for the default 60s, the held heartbeat at the queue head
+            // has a fresh enough timestamp (it was queued seconds ago
+            // when this tick started). For very long cool-downs (>5min,
+            // which only happens if the server sets an aggressive
+            // Retry-After) the held heartbeat would go stale and the
+            // server would 400-reject it on resume. That's acceptable:
+            // a 60s+ cool-down means real flooding, and dropping one
+            // stale heartbeat on resume is better than queuing a backlog
+            // of stale ones during the pause.
+            if (status == 429)
+            {
+                _rateLimitedUntil = DateTimeOffset.UtcNow.AddSeconds(retryAfterSec);
+                _consecutiveRateLimits++;
+
+                var logLevel = _consecutiveRateLimits >= 5
+                    ? LogLevel.Error
+                    : LogLevel.Warning;
+                _logger.Log(logLevel,
+                    "Heartbeat rate-limited by server (429). Retry-After={RetryAfterSec}s, " +
+                    "queue={QueuedCount}, consecutive={Consecutive}. Pausing send-loop until {Until}.",
+                    retryAfterSec, _queue.Count, _consecutiveRateLimits, _rateLimitedUntil);
+                HeartbeatFailed?.Invoke(
+                    $"Server-Drosselung (429). Pause für {retryAfterSec}s. Queue bleibt erhalten ({_queue.Count}).");
+                return;
+            }
+
+            // Successful non-429 send-attempt resets the consecutive
+            // counter so a single rate-limit episode doesn't permanently
+            // bias future logging. We do this even on other 4xx because
+            // any non-429 response means the rate-limit window has
+            // moved on — the server is talking to us again.
+            _consecutiveRateLimits = 0;
+
+            // 4xx other than 401/429: payload is broken. Drop this entry
+            // to avoid spinning on it. Body usually contains the zod-
+            // validation issues — surfacing them makes debugging schema-
+            // mismatches a one-shot. Logged at Error because a schema-
+            // mismatch is a client bug, not a transient condition.
             _queue.TryDequeue(out _);
             _logger.LogError(
                 "Heartbeat rejected by server ({Status}). Body={ErrorBody}. Dropping entry.",
