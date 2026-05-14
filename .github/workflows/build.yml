@@ -1,0 +1,133 @@
+# =============================================================================
+# .github/workflows/build.yml — build gate on every push and PR
+# =============================================================================
+#
+# Welle C / C5 — pairing-smoketest scope reduced to a build-only gate for v1.
+#
+# The roadmap spec was: "build acars-client → run CLI in mode-1 → auto-pair
+# via test-account → send 10 heartbeats → validate auto-PIREP-creation".
+# That requires an ephemeral test-airline-context (DB writes + cleanup) and
+# a server endpoint reachable from GitHub Actions — neither of which exists
+# today (vam.kevindrack.de is a cloudflared tunnel from a personal machine,
+# no staging instance).
+#
+# This workflow ships the part that's actionable NOW without that infra:
+# build all three csproj on every PR + push to master, catch the regression
+# class we actually hit (csproj drift, breaking compile changes from server-
+# side refactors that propagate to Core's HTTP shapes, missing using
+# directives after merges). The full pair-and-flight smoketest can land
+# later once a staging server or in-process test-server is available.
+#
+# Trigger: push to master + every PR. Runs in parallel with release.yml's
+# tag-trigger path — no overlap, different events.
+#
+# Why not just rely on release.yml: release.yml only runs when you push
+# a tag. Broken commits on master sit undetected until someone tags a
+# release and discovers the build is broken. A push-trigger gate catches
+# that within minutes of the merge.
+# =============================================================================
+
+name: Build
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+    branches:
+      - master
+
+jobs:
+  build:
+    name: Build all projects (Release)
+    runs-on: windows-latest
+    permissions:
+      # No write access needed — this workflow only reads source and
+      # produces in-memory build output. The build artefacts are NOT
+      # uploaded (that's release.yml's job).
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Same SDK pin as release.yml. 10.0.x picks the latest patch at
+      # workflow-run time without locking us to a specific point release.
+      - name: Setup .NET 10 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      # SimConnect dlls vendored in external/simconnect/. Same verify
+      # step as release.yml — if a contributor forgets to bring them in
+      # on a fresh clone, fail loud here rather than letting MSBuild
+      # produce a confusing "couldn't find Microsoft.FlightSimulator.SimConnect"
+      # error 30 seconds into the build.
+      - name: Verify vendored SimConnect dlls
+        shell: pwsh
+        run: |
+          $root = "$env:GITHUB_WORKSPACE\external\simconnect"
+          $managed = "$root\lib\managed\Microsoft.FlightSimulator.SimConnect.dll"
+          $native  = "$root\lib\SimConnect.dll"
+          if (-not (Test-Path $managed)) {
+            throw "Missing $managed`nVendor the SimConnect dlls under external/simconnect/lib/. See external/simconnect/README.md for the layout + sourcing instructions."
+          }
+          if (-not (Test-Path $native)) {
+            throw "Missing $native`nVendor the SimConnect dlls under external/simconnect/lib/. See external/simconnect/README.md for the layout + sourcing instructions."
+          }
+          Write-Host "SimConnect dlls present:"
+          Write-Host "  managed: $managed ($((Get-Item $managed).Length) bytes)"
+          Write-Host "  native:  $native ($((Get-Item $native).Length) bytes)"
+
+      # Restore all three csproj packages. We don't use the .slnx because
+      # the local dev convention is per-csproj builds (see project memory:
+      # "ACARS-build: per .csproj NICHT .slnx"). Mirror that here so CI
+      # exercises the exact same build invocation as a dev machine.
+      #
+      # MSFS2024SDKPath redirects the csproj's HintPath lookup at the
+      # vendored copy. Set once at the env-level so it applies to every
+      # step below.
+      - name: Restore (Core)
+        shell: pwsh
+        env:
+          MSFS2024SDKPath: ${{ github.workspace }}\external\simconnect
+        run: dotnet restore VamAcarsClient.Core\VamAcarsClient.Core.csproj
+
+      - name: Restore (Cli)
+        shell: pwsh
+        env:
+          MSFS2024SDKPath: ${{ github.workspace }}\external\simconnect
+        run: dotnet restore VamAcarsClient.Cli\VamAcarsClient.Cli.csproj
+
+      - name: Restore (Tray)
+        shell: pwsh
+        env:
+          MSFS2024SDKPath: ${{ github.workspace }}\external\simconnect
+        run: dotnet restore VamAcarsClient.Tray\VamAcarsClient.Tray.csproj
+
+      # Build all three in Release config. --no-restore avoids the redundant
+      # restore that dotnet build would otherwise run. Order: Core first
+      # because Cli + Tray reference it; if Core breaks we want that single
+      # error in isolation, not three downstream cascade failures.
+      - name: Build (Core)
+        shell: pwsh
+        env:
+          MSFS2024SDKPath: ${{ github.workspace }}\external\simconnect
+        run: dotnet build VamAcarsClient.Core\VamAcarsClient.Core.csproj --no-restore --configuration Release
+
+      - name: Build (Cli)
+        shell: pwsh
+        env:
+          MSFS2024SDKPath: ${{ github.workspace }}\external\simconnect
+        run: dotnet build VamAcarsClient.Cli\VamAcarsClient.Cli.csproj --no-restore --configuration Release
+
+      - name: Build (Tray)
+        shell: pwsh
+        env:
+          MSFS2024SDKPath: ${{ github.workspace }}\external\simconnect
+        run: dotnet build VamAcarsClient.Tray\VamAcarsClient.Tray.csproj --no-restore --configuration Release
+
+      # Tests: out-of-scope for v1. No VamAcarsClient.Tests project exists
+      # yet. When one's added, drop a `dotnet test` step here. The build
+      # gate above is the foundational regression check; tests are the
+      # quality layer on top.

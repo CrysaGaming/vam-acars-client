@@ -36,6 +36,11 @@ publish/
 *.[Pp]ublish.xml
 PublishProfiles/
 
+# Velopack release output (produced by release.ps1 -Publish, mirrored
+# to GitHub Releases — local copy is for inspection only and should
+# never be committed). Capital R because that's what vpk pack writes.
+Releases/
+
 # Sensitive
 appsettings.Development.json
 *.pfx
