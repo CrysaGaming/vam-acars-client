@@ -144,6 +144,18 @@ public partial class App : Application
     private AcarsClientService? _acarsService;
 
     /// <summary>
+    /// Welle E / E1 — OBS-overlay HTTP-server. Constructed once in
+    /// <see cref="OnStartup"/> and reused across enable/disable cycles
+    /// (start/stop are idempotent on the same instance). Null before
+    /// OnStartup completes; non-null thereafter for the lifetime of
+    /// the app. The actual listener thread is only running when the
+    /// user has flipped the EINSTELLUNGEN toggle on AND
+    /// <see cref="OverlayServer.TryStart"/> succeeded in claiming a
+    /// port — otherwise the field holds an idle server object.
+    /// </summary>
+    private OverlayServer? _overlayServer;
+
+    /// <summary>
     /// Observable state that powers both the tray-menu Status row and
     /// the MainWindow's data-bindings. Single source of truth — when
     /// the heartbeat service updates fields, both surfaces re-render.
@@ -356,18 +368,20 @@ public partial class App : Application
 
         // ─── Preferences (option #5 + Welle D / D5) ────────────────────
         // Load once at startup — defaults to AudioCueEnabled=false /
-        // DemoModeEnabled=false on missing-file (first launch) or any
-        // IO/JSON error. Bound MainWindow checkboxes flip through
-        // SetAudioCueEnabled / SetDemoModeEnabled below; both write
-        // through the shared SavePreferencesFromState helper so a
-        // single field-toggle doesn't clobber the other field on disk.
+        // DemoModeEnabled=false / OverlayServerEnabled=false on missing-file
+        // (first launch) or any IO/JSON error. Bound MainWindow checkboxes
+        // flip through SetAudioCueEnabled / SetDemoModeEnabled /
+        // SetOverlayServerEnabled below; all three write through the shared
+        // SavePreferencesFromState helper so a single field-toggle doesn't
+        // clobber any other field on disk.
         _preferencesStore = new PreferencesStore(Config);
         var prefs = _preferencesStore.Load();
         State.AudioCueEnabled = prefs.AudioCueEnabled;
         State.DemoModeEnabled = prefs.DemoModeEnabled;
+        State.OverlayServerEnabled = prefs.OverlayServerEnabled;
         _logger.LogInformation(
-            "Preferences loaded: AudioCueEnabled={AudioCueEnabled} DemoModeEnabled={DemoModeEnabled}",
-            State.AudioCueEnabled, State.DemoModeEnabled);
+            "Preferences loaded: AudioCueEnabled={AudioCueEnabled} DemoModeEnabled={DemoModeEnabled} OverlayServerEnabled={OverlayServerEnabled}",
+            State.AudioCueEnabled, State.DemoModeEnabled, State.OverlayServerEnabled);
 
         // ─── Crash-recovery probe (option #13) ─────────────────────────
         // If a SessionMarker is on disk, the previous session ended
@@ -474,6 +488,44 @@ public partial class App : Application
         if (State.HasToken)
         {
             _ = _acarsService.FetchAirlineRoutesAsync();
+        }
+
+        // ─── Welle E / E1: OBS-overlay HTTP-server ────────────────────
+        //
+        // Construct unconditionally so SetOverlayServerEnabled has a
+        // server instance to drive whenever the user toggles the
+        // EINSTELLUNGEN checkbox. The actual listener-thread only spins
+        // up when TryStart succeeds — until then this is a cheap idle
+        // object (just a logger reference + state reference, no socket).
+        //
+        // Auto-start gating: if the persisted pref says enabled, attempt
+        // TryStart now. On success: OverlayServerUrl is populated for
+        // the UI. On failure (all 11 ports busy, or unexpected
+        // HttpListenerException): flip the persisted state to false so
+        // the bound checkbox reflects reality, log a warning, and leave
+        // OverlayServerUrl null. We do NOT re-persist that flip to disk
+        // — preserving the pref means if the user closes whatever was
+        // holding the port and restarts, the overlay-server comes back
+        // automatically. Persisting the flip would require an extra
+        // user click to re-enable, which is poor UX for a transient
+        // port-conflict.
+        _overlayServer = new OverlayServer(State, _loggerFactory!.CreateLogger<OverlayServer>());
+        if (State.OverlayServerEnabled)
+        {
+            if (_overlayServer.TryStart())
+            {
+                State.OverlayServerUrl = _overlayServer.BoundUrl;
+                _logger.LogInformation(
+                    "OverlayServer auto-started at OnStartup: {Url}",
+                    State.OverlayServerUrl);
+            }
+            else
+            {
+                State.OverlayServerEnabled = false;
+                State.OverlayServerUrl = null;
+                _logger.LogWarning(
+                    "OverlayServer auto-start failed at OnStartup — ports 8765..8775 all busy. Checkbox flipped off to reflect reality.");
+            }
         }
 
         // ─── Tray icon instantiation ──────────────────────────────────
@@ -717,6 +769,106 @@ public partial class App : Application
     }
 
     /// <summary>
+    /// Welle E / E1 — toggle the OBS-overlay-server. Distinct from the
+    /// other Set* preference methods because it has SIDE EFFECTS beyond
+    /// disk persistence: it actually starts or stops the
+    /// <see cref="OverlayServer"/>, claiming or releasing a loopback
+    /// port. Called from MainWindow's EINSTELLUNGEN-card checkbox click.
+    ///
+    /// # Flow
+    ///
+    /// 1. Flip <see cref="AcarsClientState.OverlayServerEnabled"/> to
+    ///    match the click. The bound checkbox already reflects this
+    ///    visually since the click happened, but the state-setter is
+    ///    the source-of-truth for the persistence path.
+    /// 2. Persist via <see cref="SavePreferencesFromState"/>.
+    /// 3. Drive the actual <c>OverlayServer.TryStart/StopAsync</c>:
+    ///    - enabled=true  → TryStart. On success populate
+    ///      OverlayServerUrl; on failure flip State back to false (and
+    ///      re-persist) so the checkbox visually reverts — letting the
+    ///      user know nothing started rather than leaving a "checkbox
+    ///      ticked but no URL displayed" inconsistent state.
+    ///    - enabled=false → fire-and-forget StopAsync (we don't await
+    ///      from a click handler; the listener's accept-loop drains
+    ///      within milliseconds). Clear OverlayServerUrl immediately
+    ///      so the UI reflects the intent.
+    ///
+    /// # Mid-session toggle behaviour
+    ///
+    /// Unlike <see cref="SetDemoModeEnabled"/> (which intentionally
+    /// doesn't tear down a running heartbeat-service when toggled mid-
+    /// session), this method takes effect IMMEDIATELY. The overlay-
+    /// server is independent of the heartbeat lifecycle — it just
+    /// snapshots state. Flipping it off mid-flight is exactly what a
+    /// streamer would want to do before ending their stream; flipping
+    /// it on mid-flight should produce a working overlay URL on the
+    /// next OBS browser-source refresh.
+    ///
+    /// # Defensive null-check
+    ///
+    /// _overlayServer could in theory be null if OnStartup hasn't
+    /// completed (race between window-show and OnStartup). Defensive
+    /// bail rather than NullReferenceException; the checkbox stays
+    /// flipped per the user's click but no listener spins up. This
+    /// shouldn't happen in practice (window can't show before
+    /// OnStartup), but the cost of the guard is zero.
+    /// </summary>
+    public void SetOverlayServerEnabled(bool enabled)
+    {
+        State.OverlayServerEnabled = enabled;
+        SavePreferencesFromState();
+
+        if (_overlayServer is null)
+        {
+            _logger?.LogWarning(
+                "SetOverlayServerEnabled called before OnStartup completed — preference saved but server not driven");
+            return;
+        }
+
+        try
+        {
+            if (enabled)
+            {
+                if (_overlayServer.TryStart())
+                {
+                    State.OverlayServerUrl = _overlayServer.BoundUrl;
+                    _logger?.LogInformation(
+                        "OverlayServer started on user toggle: {Url}",
+                        State.OverlayServerUrl);
+                }
+                else
+                {
+                    // All ports busy — revert the checkbox + persistence
+                    // so the visual state matches what actually
+                    // happened (nothing). Re-persist so the next launch
+                    // doesn't re-attempt the same failing start.
+                    State.OverlayServerEnabled = false;
+                    State.OverlayServerUrl = null;
+                    SavePreferencesFromState();
+                    _logger?.LogWarning(
+                        "OverlayServer.TryStart failed on user toggle — ports 8765..8775 all busy. Checkbox reverted.");
+                }
+            }
+            else
+            {
+                // Fire-and-forget stop: the accept-loop drains within
+                // ms once the listener is closed, and the user has
+                // already moved on visually (checkbox is unticked).
+                _ = _overlayServer.StopAsync();
+                State.OverlayServerUrl = null;
+                _logger?.LogInformation("OverlayServer stop requested on user toggle");
+            }
+        }
+        catch (Exception ex)
+        {
+            // Belts-and-braces. TryStart and StopAsync swallow their
+            // own exceptions, but if either ever throws unexpectedly,
+            // we don't want a click handler to bring down the app.
+            _logger?.LogWarning(ex, "OverlayServer toggle threw unexpectedly");
+        }
+    }
+
+    /// <summary>
     /// Welle D / D5 — single source-of-truth for persisting the entire
     /// Preferences set from the current State. Called by every Set*
     /// preference toggle so that flipping one field (e.g. AudioCue)
@@ -754,6 +906,7 @@ public partial class App : Application
             {
                 AudioCueEnabled = State.AudioCueEnabled,
                 DemoModeEnabled = State.DemoModeEnabled,
+                OverlayServerEnabled = State.OverlayServerEnabled,
             });
         }
         catch (Exception ex)
@@ -1254,6 +1407,15 @@ public partial class App : Application
         // it at process-exit.
         _acarsService?.Dispose();
         _acarsService = null;
+
+        // Welle E / E1: OverlayServer dispose. Releases the loopback
+        // port immediately + cancels the accept-loop. Same best-effort
+        // sync-teardown contract as _acarsService — we can't await
+        // StopAsync from a sync OnExit, the listener's pending
+        // GetContext call will throw ObjectDisposedException and the
+        // loop exits at the next iteration.
+        _overlayServer?.Dispose();
+        _overlayServer = null;
 
         // HttpClient AFTER the service so any final in-flight request
         // the heartbeat-loop kicked off has a chance to complete or

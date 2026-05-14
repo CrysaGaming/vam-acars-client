@@ -60,4 +60,39 @@ public sealed class Preferences
     /// even after having a real token on file.
     /// </summary>
     public bool DemoModeEnabled { get; init; } = false;
+
+    /// <summary>
+    /// Welle E / E1 — OBS-overlay HTTP-server toggle. When true, the
+    /// tray-app binds a small <see cref="System.Net.HttpListener"/> on
+    /// loopback (127.0.0.1) that serves a self-contained HTML overlay
+    /// and a JSON snapshot of the live ACARS state.
+    ///
+    /// # Use case
+    ///
+    /// Streamers point an OBS browser-source at <c>http://127.0.0.1:{port}/</c>
+    /// and get callsign, phase, route, aircraft, and network on-stream
+    /// without round-tripping through vam.kevindrack.de's overlay-URL
+    /// (which currently lags 3-5 s). Loopback latency is ~1 ms, so the
+    /// overlay refreshes essentially in lockstep with each heartbeat.
+    ///
+    /// # Security
+    ///
+    /// The listener is bound to <c>127.0.0.1</c> ONLY — not the LAN
+    /// address, not 0.0.0.0. A Windows firewall prompt should never
+    /// appear on first run for a loopback-only listener, and no host
+    /// on the network can reach this port. We accept this trade-off
+    /// (no remote OBS box can read the overlay) for the safety of not
+    /// exposing the pilot's live position to any LAN guest.
+    ///
+    /// # Defaults
+    ///
+    /// Off on a fresh install so no listener is spun up unless the
+    /// pilot opts in via EINSTELLUNGEN. The port defaults to 8765, a
+    /// memorable value in the unregistered range; if 8765 is busy
+    /// (another VAM-client instance, an unrelated tool), the server
+    /// tries 8766..8775 before giving up. The bound port is surfaced
+    /// to the UI via <c>AcarsClientState.OverlayServerUrl</c> so the
+    /// pilot can copy the exact URL into OBS without guessing.
+    /// </summary>
+    public bool OverlayServerEnabled { get; init; } = false;
 }

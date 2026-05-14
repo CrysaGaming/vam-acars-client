@@ -1384,6 +1384,34 @@
                                   ToolTip="Zeigt die ACARS-UI ohne Pairing und ohne Server-Kommunikation. Für Streamer und Evaluierung. Wirksam ab dem nächsten Verbinden." />
 
                         <!--
+                            Welle E / E1 — OBS-overlay-server toggle. Same
+                            OneWay binding + Click-handler pattern as
+                            DemoModeCheck above. Binds to
+                            OverlayServerEnabled; the click handler routes
+                            through App.SetOverlayServerEnabled which BOTH
+                            persists the pref AND starts/stops the actual
+                            HttpListener.
+
+                            Below the checkbox: a read-only TextBlock that
+                            surfaces OverlayServerUrl (so the user can copy
+                            it into OBS's browser-source field). The
+                            FallbackValue/TargetNullValue=' — ' renders an
+                            em-dash when the server is off; once started,
+                            the actual loopback URL appears.
+                        -->
+                        <CheckBox x:Name="OverlayServerCheck"
+                                  Content="OBS-Overlay-Server"
+                                  Style="{StaticResource PrefCheckBox}"
+                                  IsChecked="{Binding OverlayServerEnabled, Mode=OneWay}"
+                                  Click="OnOverlayServerClick"
+                                  ToolTip="Lokaler HTTP-Server auf 127.0.0.1 für OBS-browser-source. Kein Firewall-Prompt, nicht im LAN sichtbar. Ports 8765..8775." />
+                        <TextBlock Margin="20,2,0,8"
+                                   FontSize="11"
+                                   Foreground="{StaticResource TextMuted}"
+                                   Text="{Binding OverlayServerUrl, StringFormat='URL: {0}', FallbackValue='URL: —', TargetNullValue='URL: —'}"
+                                   ToolTip="Diese URL in OBS als Browser-Quelle eintragen." />
+
+                        <!--
                             Version + update controls (M5). Layout:
                             permanent "Version: x.y.z" line, then a
                             conditional block (Visibility bound to

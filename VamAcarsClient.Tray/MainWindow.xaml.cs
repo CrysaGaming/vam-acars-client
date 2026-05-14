@@ -371,6 +371,28 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
+    /// Welle E / E1 — OBS-overlay-server checkbox click handler. Same
+    /// shape as <see cref="OnDemoModeClick"/>: read post-click IsChecked,
+    /// delegate to <see cref="App.SetOverlayServerEnabled"/> which BOTH
+    /// persists the pref AND starts/stops the actual
+    /// <see cref="OverlayServer"/>.
+    ///
+    /// Unlike <see cref="OnDemoModeClick"/> the toggle takes effect
+    /// immediately — the overlay-server is independent of the heartbeat
+    /// lifecycle, so we don't need the "wirksam ab nächstem Verbinden"
+    /// caveat. If <c>SetOverlayServerEnabled</c> fails to claim a port
+    /// it flips State.OverlayServerEnabled back to false, which the
+    /// OneWay binding picks up and re-renders the checkbox as unticked
+    /// — the user sees the failure visually without needing a popup.
+    /// </summary>
+    private void OnOverlayServerClick(object sender, RoutedEventArgs e)
+    {
+        var app = (App)Application.Current;
+        var enabled = OverlayServerCheck.IsChecked == true;
+        app.SetOverlayServerEnabled(enabled);
+    }
+
+    /// <summary>
     /// Update-installieren button handler (M5). Delegates to
     /// <see cref="App.ApplyUpdate"/>, which stops the heartbeat
     /// service and then hands off to Velopack's

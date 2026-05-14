@@ -445,6 +445,54 @@ public class AcarsClientState : INotifyPropertyChanged
         set => SetField(ref _demoModeEnabled, value);
     }
 
+    private bool _overlayServerEnabled;
+    /// <summary>
+    /// Welle E / E1 — user preference: run a local HTTP-server on
+    /// loopback for OBS-browser-source consumption. Persisted by
+    /// <see cref="VamAcarsClient.Core.PreferencesStore"/>; loaded
+    /// once at startup and rewritten via
+    /// <see cref="VamAcarsClient.Tray.App.SetOverlayServerEnabled"/>.
+    ///
+    /// Bound OneWay from MainWindow's EINSTELLUNGEN checkbox — same
+    /// pattern as <see cref="AudioCueEnabled"/> and
+    /// <see cref="DemoModeEnabled"/>. The Click-handler routes through
+    /// App.SetOverlayServerEnabled which both persists the preference
+    /// AND starts/stops the actual <c>OverlayServer</c> instance — the
+    /// binding setter only mirrors the post-Click visual state.
+    ///
+    /// See <see cref="VamAcarsClient.Core.Preferences.OverlayServerEnabled"/>
+    /// docstring for the full behavior contract including the
+    /// loopback-only security model and the 8765..8775 port-fallback.
+    /// </summary>
+    public bool OverlayServerEnabled
+    {
+        get => _overlayServerEnabled;
+        set => SetField(ref _overlayServerEnabled, value);
+    }
+
+    private string? _overlayServerUrl;
+    /// <summary>
+    /// Welle E / E1 — the actual URL the OBS-overlay-server bound to.
+    /// Null when the server is OFF; populated to
+    /// <c>http://127.0.0.1:{port}/</c> once the listener is running.
+    ///
+    /// Surfaced in the UI so the pilot can copy it directly into OBS's
+    /// browser-source URL field. We expose the bound URL (rather than
+    /// hardcoding 8765) because the port-fallback may have settled on
+    /// 8766+ if 8765 was busy at startup; the displayed URL is then
+    /// always the one that actually works.
+    ///
+    /// Writes from the App lifecycle: set on successful Start, cleared
+    /// to null on Stop (or on Start-failure). The OneWay binding from
+    /// MainWindow's read-only display TextBox picks up either via the
+    /// usual SetField path; no manual refresh needed.
+    /// </summary>
+    public string? OverlayServerUrl
+    {
+        get => _overlayServerUrl;
+        set => SetField(ref _overlayServerUrl, value);
+    }
+
     // ─── Pre-flight checklist (option #10) ───────────────────────────
     //
     // Discipline-tool + connect-gate. The user ticks each item off
