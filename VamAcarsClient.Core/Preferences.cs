@@ -29,4 +29,35 @@ public sealed class Preferences
     /// pilot opts in — sudden audio from a tray-app is annoying.
     /// </summary>
     public bool AudioCueEnabled { get; init; } = false;
+
+    /// <summary>
+    /// Welle D / D5 — demo-mode toggle. When true, the connect flow
+    /// proceeds WITHOUT a valid token and WITHOUT sending any heartbeats
+    /// to the server. SimConnect still attaches normally so live telemetry
+    /// flows into the UI, but the heartbeat-loop is never started.
+    ///
+    /// # Use cases
+    ///
+    /// - Streamers showing the ACARS UI on-camera without a real account
+    /// - Evaluators kicking the tires before committing to a pairing
+    /// - First-launch demo before the user generates a pairing-code
+    ///
+    /// # What demo-mode does NOT do (v1)
+    ///
+    /// - No local phase-detector. Server-side decides phase from heartbeats,
+    ///   and demo-mode sends none. <see cref="VamAcarsClient.Tray.Models.AcarsClientState.CurrentPhase"/>
+    ///   stays at its default until/unless a real connect happens. UI's
+    ///   phase indicators show "—" or stale.
+    /// - No PIREP creation. The auto-PIREP pipeline is server-driven; no
+    ///   heartbeats means no BLOCK_ON detection server-side, means no PIREP.
+    /// - No live-map visibility. The pilot doesn't show up on the public
+    ///   /live map because nothing reaches the server.
+    ///
+    /// Defaults to false so a fresh install runs in normal-pairing mode.
+    /// Opting in is explicit (EINSTELLUNGEN checkbox), opting out is
+    /// equally explicit. There's no auto-disable on successful pairing
+    /// because that would surprise streamers who deliberately want demo
+    /// even after having a real token on file.
+    /// </summary>
+    public bool DemoModeEnabled { get; init; } = false;
 }

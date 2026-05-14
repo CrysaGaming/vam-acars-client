@@ -1361,6 +1361,29 @@
                                   ToolTip="Spielt einen Windows-Systemton bei Pushback, Takeoff und Touchdown." />
 
                         <!--
+                            Welle D / D5 — Demo-Modus checkbox. Same OneWay
+                            + Click-handler pattern as AudioCueCheck above.
+                            Click routes through App.SetDemoModeEnabled
+                            which persists via PreferencesStore. Default
+                            off on a fresh install.
+
+                            Behavior is documented in detail in
+                            VamAcarsClient.Core.Preferences.DemoModeEnabled.
+                            Short version for the tooltip: skip pairing
+                            requirement, skip heartbeat-sending, but keep
+                            SimConnect attached so the UI populates with
+                            live telemetry. Wirksam ab dem nächsten Klick
+                            auf Verbinden — flipping it mid-session
+                            doesn't tear down an active heartbeat-loop.
+                        -->
+                        <CheckBox x:Name="DemoModeCheck"
+                                  Content="Demo-Modus (keine Heartbeats senden)"
+                                  Style="{StaticResource PrefCheckBox}"
+                                  IsChecked="{Binding DemoModeEnabled, Mode=OneWay}"
+                                  Click="OnDemoModeClick"
+                                  ToolTip="Zeigt die ACARS-UI ohne Pairing und ohne Server-Kommunikation. Für Streamer und Evaluierung. Wirksam ab dem nächsten Verbinden." />
+
+                        <!--
                             Version + update controls (M5). Layout:
                             permanent "Version: x.y.z" line, then a
                             conditional block (Visibility bound to

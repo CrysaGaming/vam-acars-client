@@ -163,8 +163,14 @@ public sealed class AcarsClientService : IDisposable
     /// True between <see cref="StartAsync"/> succeeding and <see cref="StopAsync"/>
     /// returning. Used to gate Start (idempotent — second call is a no-op) and
     /// to skip teardown logic when nothing was running.
+    ///
+    /// Includes _sim in the disjunction so Welle D / D5 demo-mode sessions
+    /// (which deliberately skip heartbeat-service construction) still count
+    /// as "running" — without the _sim check, the IsRunning idempotency gate
+    /// at the top of StartAsync would let a demo-mode pilot connect twice
+    /// in a row and leak a SimConnectClient on each re-attempt.
     /// </summary>
-    public bool IsRunning => _heartbeat is not null;
+    public bool IsRunning => _heartbeat is not null || _sim is not null;
 
     public AcarsClientService(
         HttpClient http,
@@ -199,28 +205,64 @@ public sealed class AcarsClientService : IDisposable
             return true;
         }
 
+        // ─── Welle D / D5 — demo-mode capture ────────────────────────────
+        //
+        // Snapshot the user preference ONCE at the top of StartAsync so the
+        // whole connect-flow operates against a stable decision. Toggling
+        // the EINSTELLUNGEN checkbox mid-connect (between this line and
+        // the gates below) would otherwise produce a half-demo session
+        // — token loaded under normal-mode but heartbeat skipped, or
+        // vice-versa — which is exactly the kind of inconsistency that
+        // produces \"why isn't this sending heartbeats?\" support tickets.
+        //
+        // The pilot-facing semantics are documented in SetDemoModeEnabled's
+        // tooltip ("wirksam ab nächstem Verbinden"): the checkbox state
+        // only changes BEHAVIOR on the next Verbinden, not mid-session.
+        var isDemoMode = _state.DemoModeEnabled;
+
         _logger.LogInformation(
-            "Starting ACARS client (callsign={Callsign}, network={Network})",
-            flightContext.Callsign, flightContext.Network);
+            "Starting ACARS client (callsign={Callsign}, network={Network}, demoMode={DemoMode})",
+            flightContext.Callsign, flightContext.Network, isDemoMode);
 
         // ─── 1. Token ──────────────────────────────────────────────────
         // The TokenStore-probe in App.OnStartup already populated
         // State.HasToken, but that was at app-startup. The user could
         // have re-paired or revoked since then, so we always re-load
         // fresh here. Failing to load = clear state, surface to UI.
-        var token = _tokenStore.TryLoad();
-        if (token is null)
+        //
+        // DEMO MODE EXCEPTION: pilots in demo mode may not have paired
+        // yet (streamers showing the UI on-camera, evaluators kicking
+        // the tires before committing to a pairing). We skip the
+        // token-load entirely and pass null through to the heartbeat
+        // section, which will skip construction anyway. State.HasToken
+        // stays at whatever it was set to at app-startup (probably
+        // false in demo mode, but a pilot who paired then enabled
+        // demo-mode would have HasToken=true and we don't disturb that).
+        string? token = null;
+        if (!isDemoMode)
+        {
+            token = _tokenStore.TryLoad();
+            if (token is null)
+            {
+                await SetStateAsync(s =>
+                {
+                    s.ConnectionStatus = ConnectionStatus.Error;
+                    s.StatusMessage = "Kein Token gespeichert. Erst über die CLI pairen (Mode 1).";
+                    s.HasToken = false;
+                });
+                _logger.LogWarning("StartAsync aborted: no token in store");
+                return false;
+            }
+            await SetStateAsync(s => { s.HasToken = true; s.ConnectionStatus = ConnectionStatus.Connecting; s.StatusMessage = "Verbinde zu MSFS …"; });
+        }
+        else
         {
             await SetStateAsync(s =>
             {
-                s.ConnectionStatus = ConnectionStatus.Error;
-                s.StatusMessage = "Kein Token gespeichert. Erst über die CLI pairen (Mode 1).";
-                s.HasToken = false;
+                s.ConnectionStatus = ConnectionStatus.Connecting;
+                s.StatusMessage = "DEMO-MODUS — Verbinde zu MSFS (keine Server-Heartbeats) …";
             });
-            _logger.LogWarning("StartAsync aborted: no token in store");
-            return false;
         }
-        await SetStateAsync(s => { s.HasToken = true; s.ConnectionStatus = ConnectionStatus.Connecting; s.StatusMessage = "Verbinde zu MSFS …"; });
 
         // ─── 2. SimConnect ─────────────────────────────────────────────
         // Connect can throw COMException when MSFS isn't running
@@ -271,57 +313,82 @@ public sealed class AcarsClientService : IDisposable
         _sim = sim;
 
         // ─── 3. HeartbeatService ───────────────────────────────────────
-        var heartbeat = new HeartbeatService(
-            _http,
-            _sim,
-            token,
-            flightContext,
-            interval: TimeSpan.FromSeconds(_config.Heartbeat.IntervalSeconds),
-            logger: _loggerFactory.CreateLogger<HeartbeatService>());
-
-        heartbeat.HeartbeatSent += OnHeartbeatSent;
-        heartbeat.HeartbeatFailed += OnHeartbeatFailed;
-        heartbeat.ReAuthRequired += OnReAuthRequired;
-        heartbeat.AircraftSubstitutionDelivered += OnAircraftSubstitutionDelivered;
-
-        // ─── B4 P2C: stage pending aircraft-substitution disposition ──
         //
-        // If the pre-connect dialog flow set State.Pending* (because the
-        // pilot dispositioned a booked-vs-flown aircraft mismatch),
-        // forward the snapshot to the freshly-constructed HeartbeatService
-        // BEFORE heartbeat.Start() fires the first BuildHeartbeat call.
-        // Doing it after Start is racy: a heartbeat could be built and
-        // sent without the block.
+        // DEMO MODE EXCEPTION (Welle D / D5): skip the entire heartbeat-
+        // service setup. SimConnect is already attached above, so the
+        // poll-loop below will still pump telemetry into _sim.LatestTelemetry
+        // and the live-map / telemetry-tab UI will populate locally —
+        // but nothing reaches the server. _heartbeat stays null;
+        // OnTelemetryTick already early-returns on null _heartbeat (see
+        // that method's null-guard), so the 2s telemetry-poll timer
+        // simply produces zero updates per tick in demo mode.
         //
-        // The state is mutated from the UI thread (MainWindow's connect
-        // handler), and we read it here on the calling thread; both
-        // accesses are serialized by C#'s memory model for the field
-        // reads (each property is a simple field load). No SetStateAsync
-        // round-trip is needed for a read.
-        //
-        // Null-check on intent gates the staging; the other three fields
-        // get safe defaults so a malformed state (intent set but booked/
-        // flown not) still produces a well-formed payload rather than a
-        // NullReferenceException — server-side validation will reject
-        // empty type strings if it ever happens.
-        if (!string.IsNullOrWhiteSpace(_state.PendingSubstitutionIntent))
+        // We also skip the B4-substitution staging block because that
+        // explicitly writes to the heartbeat-service's pending field;
+        // with no service, the staged value would be silently dropped.
+        // The pre-connect dialog flow shouldn't fire in demo mode anyway
+        // (no booking → no booked-vs-flown mismatch), but the defensive
+        // gate here protects against future flows that might stage
+        // substitution under demo.
+        if (!isDemoMode)
         {
-            var sub = new HeartbeatAircraftSubstitution
-            {
-                Intent = _state.PendingSubstitutionIntent!,
-                BookedAircraftType = _state.PendingSubstitutionBookedType ?? "",
-                FlownAircraftType = _state.PendingSubstitutionFlownType ?? "",
-                Reason = _state.PendingSubstitutionReason,
-            };
-            heartbeat.SetPendingAircraftSubstitution(sub);
-            _logger.LogInformation(
-                "B4 P2C: staged aircraft-substitution disposition on heartbeat (intent={Intent}, booked={Booked}, flown={Flown}, reason={Reason})",
-                sub.Intent, sub.BookedAircraftType, sub.FlownAircraftType,
-                sub.Reason ?? "(none)");
-        }
+            var heartbeat = new HeartbeatService(
+                _http,
+                _sim,
+                token!, // non-null guaranteed by the !isDemoMode token-load above
+                flightContext,
+                interval: TimeSpan.FromSeconds(_config.Heartbeat.IntervalSeconds),
+                logger: _loggerFactory.CreateLogger<HeartbeatService>());
 
-        heartbeat.Start();
-        _heartbeat = heartbeat;
+            heartbeat.HeartbeatSent += OnHeartbeatSent;
+            heartbeat.HeartbeatFailed += OnHeartbeatFailed;
+            heartbeat.ReAuthRequired += OnReAuthRequired;
+            heartbeat.AircraftSubstitutionDelivered += OnAircraftSubstitutionDelivered;
+
+            // ─── B4 P2C: stage pending aircraft-substitution disposition ──
+            //
+            // If the pre-connect dialog flow set State.Pending* (because the
+            // pilot dispositioned a booked-vs-flown aircraft mismatch),
+            // forward the snapshot to the freshly-constructed HeartbeatService
+            // BEFORE heartbeat.Start() fires the first BuildHeartbeat call.
+            // Doing it after Start is racy: a heartbeat could be built and
+            // sent without the block.
+            //
+            // The state is mutated from the UI thread (MainWindow's connect
+            // handler), and we read it here on the calling thread; both
+            // accesses are serialized by C#'s memory model for the field
+            // reads (each property is a simple field load). No SetStateAsync
+            // round-trip is needed for a read.
+            //
+            // Null-check on intent gates the staging; the other three fields
+            // get safe defaults so a malformed state (intent set but booked/
+            // flown not) still produces a well-formed payload rather than a
+            // NullReferenceException — server-side validation will reject
+            // empty type strings if it ever happens.
+            if (!string.IsNullOrWhiteSpace(_state.PendingSubstitutionIntent))
+            {
+                var sub = new HeartbeatAircraftSubstitution
+                {
+                    Intent = _state.PendingSubstitutionIntent!,
+                    BookedAircraftType = _state.PendingSubstitutionBookedType ?? "",
+                    FlownAircraftType = _state.PendingSubstitutionFlownType ?? "",
+                    Reason = _state.PendingSubstitutionReason,
+                };
+                heartbeat.SetPendingAircraftSubstitution(sub);
+                _logger.LogInformation(
+                    "B4 P2C: staged aircraft-substitution disposition on heartbeat (intent={Intent}, booked={Booked}, flown={Flown}, reason={Reason})",
+                    sub.Intent, sub.BookedAircraftType, sub.FlownAircraftType,
+                    sub.Reason ?? "(none)");
+            }
+
+            heartbeat.Start();
+            _heartbeat = heartbeat;
+        }
+        else
+        {
+            _logger.LogInformation(
+                "Demo mode active — heartbeat-service NOT constructed. Telemetry stays UI-local; no server traffic.");
+        }
 
         // ─── Telemetry-tab UI poll start (Welle A — option A1) ─────────
         // Start the 2s DispatcherTimer that reads HeartbeatService's
@@ -349,10 +416,18 @@ public sealed class AcarsClientService : IDisposable
         // Optimistic seed of the State callsign + flight-plan fields so
         // the UI has *something* before the first heartbeat-response
         // arrives (~2 s). Counters stay at 0 until then.
+        //
+        // Welle D / D5: in demo mode there's no heartbeat-response coming,
+        // so the "Warte auf erste Heartbeat-Antwort…" message would sit
+        // there forever — misleading. We pick a demo-specific terminal
+        // message that makes the no-server-traffic contract obvious to
+        // the pilot ("DEMO-MODUS — keine Heartbeats werden gesendet.").
         await SetStateAsync(s =>
         {
             s.Callsign = flightContext.Callsign;
-            s.StatusMessage = "Verbunden. Warte auf erste Heartbeat-Antwort…";
+            s.StatusMessage = isDemoMode
+                ? "DEMO-MODUS aktiv — Telemetrie nur lokal, keine Heartbeats werden gesendet."
+                : "Verbunden. Warte auf erste Heartbeat-Antwort…";
         });
 
         // ─── 5. Crash-recovery marker (option #13) ─────────────────────

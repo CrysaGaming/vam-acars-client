@@ -350,6 +350,27 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
+    /// Welle D / D5 — Demo-mode checkbox click handler. Same shape as
+    /// <see cref="OnAudioCueClick"/>: read post-click IsChecked, delegate
+    /// to <see cref="App.SetDemoModeEnabled"/> which routes through
+    /// SavePreferencesFromState so other preference fields stay intact.
+    ///
+    /// Note that toggling this checkbox during an active session does NOT
+    /// tear down the running heartbeat-loop — see SetDemoModeEnabled's
+    /// docstring for the rationale (don't yank the rug out from a pilot
+    /// mid-flight; the gate at the top of AcarsClientService.StartAsync
+    /// is what enforces the no-heartbeat contract). The tooltip on the
+    /// checkbox ("wirksam ab dem nächsten Verbinden") documents this
+    /// for the pilot.
+    /// </summary>
+    private void OnDemoModeClick(object sender, RoutedEventArgs e)
+    {
+        var app = (App)Application.Current;
+        var enabled = DemoModeCheck.IsChecked == true;
+        app.SetDemoModeEnabled(enabled);
+    }
+
+    /// <summary>
     /// Update-installieren button handler (M5). Delegates to
     /// <see cref="App.ApplyUpdate"/>, which stops the heartbeat
     /// service and then hands off to Velopack's

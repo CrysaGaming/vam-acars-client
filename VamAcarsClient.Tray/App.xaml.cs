@@ -354,16 +354,20 @@ public partial class App : Application
             State.AutoStartEnabled = false;
         }
 
-        // ─── Preferences (option #5) ───────────────────────────────────
-        // Load once at startup — defaults to AudioCueEnabled=false on
-        // missing-file (first launch) or any IO/JSON error. Bound
-        // MainWindow checkbox flips through SetAudioCueEnabled below.
+        // ─── Preferences (option #5 + Welle D / D5) ────────────────────
+        // Load once at startup — defaults to AudioCueEnabled=false /
+        // DemoModeEnabled=false on missing-file (first launch) or any
+        // IO/JSON error. Bound MainWindow checkboxes flip through
+        // SetAudioCueEnabled / SetDemoModeEnabled below; both write
+        // through the shared SavePreferencesFromState helper so a
+        // single field-toggle doesn't clobber the other field on disk.
         _preferencesStore = new PreferencesStore(Config);
         var prefs = _preferencesStore.Load();
         State.AudioCueEnabled = prefs.AudioCueEnabled;
+        State.DemoModeEnabled = prefs.DemoModeEnabled;
         _logger.LogInformation(
-            "Preferences loaded: AudioCueEnabled={Enabled}",
-            State.AudioCueEnabled);
+            "Preferences loaded: AudioCueEnabled={AudioCueEnabled} DemoModeEnabled={DemoModeEnabled}",
+            State.AudioCueEnabled, State.DemoModeEnabled);
 
         // ─── Crash-recovery probe (option #13) ─────────────────────────
         // If a SessionMarker is on disk, the previous session ended
@@ -679,14 +683,78 @@ public partial class App : Application
     public void SetAudioCueEnabled(bool enabled)
     {
         State.AudioCueEnabled = enabled;
-        if (_preferencesStore is null) return;
+        SavePreferencesFromState();
+        _logger?.LogInformation(
+            "Audio cue {Status} by user",
+            enabled ? "enabled" : "disabled");
+    }
 
+    /// <summary>
+    /// Welle D / D5 — toggle the demo-mode preference. Same pattern as
+    /// <see cref="SetAudioCueEnabled"/>: update the bound state mirror,
+    /// persist the whole Preferences-set to disk via the shared
+    /// SavePreferencesFromState helper. Called from MainWindow's
+    /// EINSTELLUNGEN-card checkbox click.
+    ///
+    /// Mid-session toggle behavior: if heartbeats are currently flowing
+    /// (Connected state) and the user flips demo-mode ON, the running
+    /// HeartbeatService keeps running until the next user-driven
+    /// Disconnect → Connect cycle. We deliberately don't auto-restart
+    /// the service here because that would yank the rug out from a
+    /// pilot mid-flight, AND because the gate in
+    /// <see cref="VamAcarsClient.Tray.Models.AcarsClientService.StartAsync"/>
+    /// is what enforces the no-heartbeat contract — it only fires on
+    /// the next connect. The pilot-facing semantics are documented in
+    /// the EINSTELLUNGEN checkbox tooltip: "wirksam ab nächstem Verbinden".
+    /// </summary>
+    public void SetDemoModeEnabled(bool enabled)
+    {
+        State.DemoModeEnabled = enabled;
+        SavePreferencesFromState();
+        _logger?.LogInformation(
+            "Demo mode {Status} by user",
+            enabled ? "enabled" : "disabled");
+    }
+
+    /// <summary>
+    /// Welle D / D5 — single source-of-truth for persisting the entire
+    /// Preferences set from the current State. Called by every Set*
+    /// preference toggle so that flipping one field (e.g. AudioCue)
+    /// doesn't clobber any other field (e.g. DemoMode) on disk.
+    ///
+    /// # Why a helper exists now (previously inlined)
+    ///
+    /// Before D5 there was only one preference field (AudioCueEnabled),
+    /// so <c>SetAudioCueEnabled</c> could do <c>Save(new Preferences {
+    /// AudioCueEnabled = enabled })</c> inline. With DemoModeEnabled
+    /// added, that inline shape would erase whichever field WASN'T being
+    /// toggled — Save takes the full POCO and overwrites the file
+    /// wholesale. The fix is to always build the Preferences from the
+    /// current State (which already has both fields in memory), then
+    /// save the composite. Any future preference addition just needs
+    /// to be added to State + to the builder below; all Set* methods
+    /// pick up the new field for free.
+    ///
+    /// # Disk failure mode
+    ///
+    /// IO/serialization exceptions are caught + logged at Warning. The
+    /// in-memory toggle has already landed (caller flipped State before
+    /// invoking us), so the bound checkbox stays in sync with what the
+    /// user clicked even when disk-write fails — a restart re-reads the
+    /// stale file and reverts. Acceptable trade vs. rolling back the
+    /// in-memory toggle, which would surprise the user with a visual
+    /// flip-back after their click.
+    /// </summary>
+    private void SavePreferencesFromState()
+    {
+        if (_preferencesStore is null) return;
         try
         {
-            _preferencesStore.Save(new Preferences { AudioCueEnabled = enabled });
-            _logger?.LogInformation(
-                "Audio cue {Status} by user",
-                enabled ? "enabled" : "disabled");
+            _preferencesStore.Save(new Preferences
+            {
+                AudioCueEnabled = State.AudioCueEnabled,
+                DemoModeEnabled = State.DemoModeEnabled,
+            });
         }
         catch (Exception ex)
         {

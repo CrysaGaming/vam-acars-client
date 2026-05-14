@@ -419,6 +419,32 @@ public class AcarsClientState : INotifyPropertyChanged
         set => SetField(ref _audioCueEnabled, value);
     }
 
+    private bool _demoModeEnabled;
+    /// <summary>
+    /// Welle D / D5 — user preference: bypass pairing-required gate and
+    /// skip heartbeat-sending entirely. SimConnect still attaches and
+    /// streams telemetry to the UI, but no network traffic reaches the
+    /// VAM server. Persisted by <see cref="VamAcarsClient.Core.PreferencesStore"/>;
+    /// loaded once at startup and rewritten via
+    /// <see cref="VamAcarsClient.Tray.App.SetDemoModeEnabled"/>.
+    ///
+    /// Bound OneWay from MainWindow's EINSTELLUNGEN checkbox — same
+    /// pattern as <see cref="AudioCueEnabled"/>. The Click-handler
+    /// routes through App.SetDemoModeEnabled rather than the binding
+    /// setter, so JSON-file IO stays out of the binding-propagation
+    /// path.
+    ///
+    /// See <see cref="VamAcarsClient.Core.Preferences.DemoModeEnabled"/>
+    /// docstring for the full behavior contract — particularly what
+    /// demo-mode does NOT do (no local phase-detection, no PIREP,
+    /// no live-map visibility).
+    /// </summary>
+    public bool DemoModeEnabled
+    {
+        get => _demoModeEnabled;
+        set => SetField(ref _demoModeEnabled, value);
+    }
+
     // ─── Pre-flight checklist (option #10) ───────────────────────────
     //
     // Discipline-tool + connect-gate. The user ticks each item off
