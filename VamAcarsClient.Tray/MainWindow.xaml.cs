@@ -393,6 +393,32 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
+    /// Welle E / E2 — voice-commands checkbox click handler. Same shape
+    /// as <see cref="OnOverlayServerClick"/>: read post-click IsChecked,
+    /// delegate to <see cref="App.SetVoiceCommandsEnabled"/> which BOTH
+    /// persists the pref AND starts/stops the actual
+    /// <see cref="VoiceCommandService"/>.
+    ///
+    /// Mirror-image of E1: where the overlay-server failure path is a
+    /// busy-port (deterministic, fast to detect), the voice-service
+    /// failure path is "no microphone attached" or "no recognizer
+    /// installed for any UI culture" — both are silent at TryStart,
+    /// reported via State.VoiceCommandsEnabled getting flipped back to
+    /// false. The OneWay binding picks up the revert and unticks the
+    /// checkbox so the user can see start failed without a popup.
+    ///
+    /// The toggle is live during a session — turning sprachsteuerung
+    /// on or off mid-flight does NOT interrupt heartbeats. The voice
+    /// service is an input-only side-channel.
+    /// </summary>
+    private void OnVoiceCommandsClick(object sender, RoutedEventArgs e)
+    {
+        var app = (App)Application.Current;
+        var enabled = VoiceCommandsCheck.IsChecked == true;
+        app.SetVoiceCommandsEnabled(enabled);
+    }
+
+    /// <summary>
     /// Update-installieren button handler (M5). Delegates to
     /// <see cref="App.ApplyUpdate"/>, which stops the heartbeat
     /// service and then hands off to Velopack's

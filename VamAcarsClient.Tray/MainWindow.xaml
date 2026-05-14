@@ -1412,6 +1412,21 @@
                                    ToolTip="Diese URL in OBS als Browser-Quelle eintragen." />
 
                         <!--
+                            Welle E / E2: Voice-command toggle.
+                            Listens on the default mic for "VAM Status",
+                            "VAM Verbinden", "VAM Trennen", "VAM Flugzeug".
+                            All audio stays local (Windows Speech API).
+                            OneWay binding + Click handler — same pattern
+                            as the other EINSTELLUNGEN toggles.
+                        -->
+                        <CheckBox x:Name="VoiceCommandsCheck"
+                                  Content="Sprachsteuerung (Mikrofon)"
+                                  Style="{StaticResource PrefCheckBox}"
+                                  IsChecked="{Binding VoiceCommandsEnabled, Mode=OneWay}"
+                                  Click="OnVoiceCommandsClick"
+                                  ToolTip="Hört auf 'VAM Status', 'VAM Verbinden', 'VAM Trennen', 'VAM Flugzeug'. Lokal via Windows Speech API, keine Cloud." />
+
+                        <!--
                             Version + update controls (M5). Layout:
                             permanent "Version: x.y.z" line, then a
                             conditional block (Visibility bound to

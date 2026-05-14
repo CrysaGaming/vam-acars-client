@@ -493,6 +493,24 @@ public class AcarsClientState : INotifyPropertyChanged
         set => SetField(ref _overlayServerUrl, value);
     }
 
+    private bool _voiceCommandsEnabled;
+
+    /// <summary>
+    /// Welle E / E2 — voice-commands toggle. Bound OneWay to
+    /// <c>VoiceCommandsCheck</c> in the EINSTELLUNGEN card. Mutated by
+    /// <c>App.SetVoiceCommandsEnabled</c> which BOTH persists the
+    /// preference AND starts/stops the underlying
+    /// <c>VoiceCommandService</c>.
+    ///
+    /// See <see cref="VamAcarsClient.Core.Preferences.VoiceCommandsEnabled"/>
+    /// for grammar + use cases.
+    /// </summary>
+    public bool VoiceCommandsEnabled
+    {
+        get => _voiceCommandsEnabled;
+        set => SetField(ref _voiceCommandsEnabled, value);
+    }
+
     // ─── Pre-flight checklist (option #10) ───────────────────────────
     //
     // Discipline-tool + connect-gate. The user ticks each item off

@@ -110,6 +110,22 @@
 			maybe once a week. https://velopack.io/
 		-->
 		<PackageReference Include="Velopack" Version="0.0.1298" />
+
+		<!--
+			Welle E / E2 — Voice-commands via Windows Speech API.
+			System.Speech is Microsoft's wrapper around SAPI 5.4
+			(Windows Speech API). Ships as a NuGet package since
+			.NET Core; older .NET Framework had it in-box. The
+			recognizer reads from the default microphone, the
+			synthesizer writes to the default audio output —
+			both are configurable via Windows sound settings, we
+			don't expose per-device routing in v1.
+
+			Windows-only on purpose: ACARS-Tray is already a WPF
+			app pinned to net10.0-windows, so the System.Speech
+			Windows dependency is in-line with existing scope.
+		-->
+		<PackageReference Include="System.Speech" Version="10.0.0" />
 	</ItemGroup>
 
 	<!--

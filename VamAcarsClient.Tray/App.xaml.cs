@@ -156,6 +156,19 @@ public partial class App : Application
     private OverlayServer? _overlayServer;
 
     /// <summary>
+    /// Welle E / E2 — voice-command listener. Constructed once in
+    /// <see cref="OnStartup"/> and reused across enable/disable
+    /// cycles (start/stop are idempotent on the same instance). Null
+    /// before OnStartup completes; non-null thereafter for the
+    /// lifetime of the app. The recognizer thread only spins up when
+    /// the user has flipped the EINSTELLUNGEN toggle on AND
+    /// <see cref="VoiceCommandService.TryStart"/> succeeded
+    /// (microphone present, speech recognizer installed). Otherwise
+    /// the field holds an idle service object.
+    /// </summary>
+    private VoiceCommandService? _voiceCommandService;
+
+    /// <summary>
     /// Observable state that powers both the tray-menu Status row and
     /// the MainWindow's data-bindings. Single source of truth — when
     /// the heartbeat service updates fields, both surfaces re-render.
@@ -379,9 +392,10 @@ public partial class App : Application
         State.AudioCueEnabled = prefs.AudioCueEnabled;
         State.DemoModeEnabled = prefs.DemoModeEnabled;
         State.OverlayServerEnabled = prefs.OverlayServerEnabled;
+        State.VoiceCommandsEnabled = prefs.VoiceCommandsEnabled;
         _logger.LogInformation(
-            "Preferences loaded: AudioCueEnabled={AudioCueEnabled} DemoModeEnabled={DemoModeEnabled} OverlayServerEnabled={OverlayServerEnabled}",
-            State.AudioCueEnabled, State.DemoModeEnabled, State.OverlayServerEnabled);
+            "Preferences loaded: AudioCueEnabled={AudioCueEnabled} DemoModeEnabled={DemoModeEnabled} OverlayServerEnabled={OverlayServerEnabled} VoiceCommandsEnabled={VoiceCommandsEnabled}",
+            State.AudioCueEnabled, State.DemoModeEnabled, State.OverlayServerEnabled, State.VoiceCommandsEnabled);
 
         // ─── Crash-recovery probe (option #13) ─────────────────────────
         // If a SessionMarker is on disk, the previous session ended
@@ -525,6 +539,52 @@ public partial class App : Application
                 State.OverlayServerUrl = null;
                 _logger.LogWarning(
                     "OverlayServer auto-start failed at OnStartup — ports 8765..8775 all busy. Checkbox flipped off to reflect reality.");
+            }
+        }
+
+        // ─── Welle E / E2: Voice-command listener ─────────────────────
+        //
+        // Construct unconditionally so SetVoiceCommandsEnabled has a
+        // service instance to drive whenever the user toggles the
+        // EINSTELLUNGEN checkbox. The actual recognizer-thread only
+        // spins up when TryStart succeeds — until then this is a cheap
+        // idle object holding references but no audio resources.
+        //
+        // Callbacks: VoiceConnectAsync / VoiceDisconnectAsync are
+        // helper methods on App that wrap the AcarsClientService's
+        // Start/Stop. We pass them as Func<Task> rather than taking
+        // a hard dependency on the service in VoiceCommandService —
+        // this keeps the service decoupled and testable. The Connect
+        // callback reads form-fields off MainWindow OR falls back to
+        // LastFlightContext when the window isn't open yet (rare —
+        // voice-commands without a visible window is an unusual flow
+        // but worth supporting cleanly).
+        //
+        // Auto-start gating: same shape as OverlayServer above. If the
+        // persisted pref is enabled, TryStart now. On TryStart failure
+        // (no mic, no recognizer locale installed, mic permission
+        // denied): flip persisted state to false so the bound checkbox
+        // reflects reality. Don't re-persist that flip — preserving
+        // the pref means the next launch (after the user installs the
+        // de-DE speech feature, or plugs in their mic) auto-starts
+        // voice-commands without an extra click.
+        _voiceCommandService = new VoiceCommandService(
+            State,
+            Dispatcher,
+            _loggerFactory!.CreateLogger<VoiceCommandService>(),
+            onConnectRequested: VoiceConnectAsync,
+            onDisconnectRequested: VoiceDisconnectAsync);
+        if (State.VoiceCommandsEnabled)
+        {
+            if (_voiceCommandService.TryStart())
+            {
+                _logger.LogInformation("VoiceCommandService auto-started at OnStartup");
+            }
+            else
+            {
+                State.VoiceCommandsEnabled = false;
+                _logger.LogWarning(
+                    "VoiceCommandService auto-start failed at OnStartup — no microphone or no recognizer installed. Checkbox flipped off to reflect reality.");
             }
         }
 
@@ -869,6 +929,123 @@ public partial class App : Application
     }
 
     /// <summary>
+    /// Welle E / E2 — toggle the voice-command listener. Same shape as
+    /// <see cref="SetOverlayServerEnabled"/>: BOTH persists the preference
+    /// AND starts/stops the underlying <see cref="VoiceCommandService"/>.
+    /// Called from MainWindow's EINSTELLUNGEN-card checkbox click.
+    ///
+    /// On TryStart failure (no microphone, no recognizer locale installed,
+    /// audio-permission denied) we flip State.VoiceCommandsEnabled back
+    /// to false and re-persist, so the bound checkbox visually reverts.
+    /// The user sees the failure as "the box won't stay ticked" — clearer
+    /// than a checkbox that's on but produces nothing.
+    /// </summary>
+    public void SetVoiceCommandsEnabled(bool enabled)
+    {
+        State.VoiceCommandsEnabled = enabled;
+        SavePreferencesFromState();
+
+        if (_voiceCommandService is null)
+        {
+            _logger?.LogWarning(
+                "SetVoiceCommandsEnabled called before OnStartup completed — preference saved but service not driven");
+            return;
+        }
+
+        try
+        {
+            if (enabled)
+            {
+                if (_voiceCommandService.TryStart())
+                {
+                    _logger?.LogInformation("VoiceCommandService started on user toggle");
+                }
+                else
+                {
+                    State.VoiceCommandsEnabled = false;
+                    SavePreferencesFromState();
+                    _logger?.LogWarning(
+                        "VoiceCommandService.TryStart failed on user toggle — no mic or no recognizer. Checkbox reverted.");
+                }
+            }
+            else
+            {
+                _ = _voiceCommandService.StopAsync();
+                _logger?.LogInformation("VoiceCommandService stop requested on user toggle");
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogWarning(ex, "VoiceCommandService toggle threw unexpectedly");
+        }
+    }
+
+    /// <summary>
+    /// Welle E / E2 — callback wired into <see cref="VoiceCommandService"/>'s
+    /// ctor. Invoked when the user says "VAM Verbinden". Builds a
+    /// FlightContext from either MainWindow's form fields (when the window
+    /// is open) or <see cref="LastFlightContext"/> (when not), then drives
+    /// <see cref="AcarsClientService.StartAsync"/>. Errors are caught +
+    /// logged so a voice-driven connect failure never crashes the
+    /// recognizer thread.
+    /// </summary>
+    private async Task VoiceConnectAsync()
+    {
+        if (_acarsService is null) return;
+
+        FlightContext? ctx = null;
+        if (_mainWindow is not null && _mainWindow.IsVisible)
+        {
+            // Read form-fields directly. Same shape as OnConnectClick in
+            // MainWindow.xaml.cs — collapse empty/whitespace fields to
+            // defaults / null, uppercase ICAO codes.
+            ctx = new FlightContext
+            {
+                Callsign = string.IsNullOrWhiteSpace(_mainWindow.CallsignBox.Text)
+                    ? "NGN001"
+                    : _mainWindow.CallsignBox.Text.Trim().ToUpperInvariant(),
+                Network = string.IsNullOrWhiteSpace(_mainWindow.NetworkBox.Text)
+                    ? "Offline"
+                    : _mainWindow.NetworkBox.Text.Trim(),
+                DepartureIcao = string.IsNullOrWhiteSpace(_mainWindow.DeparturBox.Text)
+                    ? null
+                    : _mainWindow.DeparturBox.Text.Trim().ToUpperInvariant(),
+                ArrivalIcao = string.IsNullOrWhiteSpace(_mainWindow.ArrivalBox.Text)
+                    ? null
+                    : _mainWindow.ArrivalBox.Text.Trim().ToUpperInvariant(),
+            };
+        }
+        else
+        {
+            // Window not open — fall back to last-known persisted
+            // context. Common when the user has the tray running
+            // headless and triggers voice without opening the UI.
+            ctx = LastFlightContext;
+        }
+
+        if (ctx is null)
+        {
+            _logger?.LogWarning("VoiceConnectAsync: no flight context available — bailing");
+            return;
+        }
+
+        await _acarsService.StartAsync(ctx).ConfigureAwait(true);
+        SaveFlightContext(ctx);
+    }
+
+    /// <summary>
+    /// Welle E / E2 — callback for "VAM Trennen". Simple wrapper around
+    /// <see cref="AcarsClientService.StopAsync"/>; just there so the
+    /// VoiceCommandService doesn't take a hard dependency on the
+    /// service shape.
+    /// </summary>
+    private async Task VoiceDisconnectAsync()
+    {
+        if (_acarsService is null) return;
+        await _acarsService.StopAsync().ConfigureAwait(true);
+    }
+
+    /// <summary>
     /// Welle D / D5 — single source-of-truth for persisting the entire
     /// Preferences set from the current State. Called by every Set*
     /// preference toggle so that flipping one field (e.g. AudioCue)
@@ -907,6 +1084,7 @@ public partial class App : Application
                 AudioCueEnabled = State.AudioCueEnabled,
                 DemoModeEnabled = State.DemoModeEnabled,
                 OverlayServerEnabled = State.OverlayServerEnabled,
+                VoiceCommandsEnabled = State.VoiceCommandsEnabled,
             });
         }
         catch (Exception ex)
@@ -1416,6 +1594,15 @@ public partial class App : Application
         // loop exits at the next iteration.
         _overlayServer?.Dispose();
         _overlayServer = null;
+
+        // Welle E / E2: VoiceCommandService dispose. Stops the recognizer
+        // engine + releases the microphone handle. Best-effort sync teardown
+        // — Dispose internally cancels the in-flight RecognizeAsync and
+        // disposes the engine without awaiting the drain (the engine's
+        // worker thread parks within ms once Stop is called). TTS synth
+        // is disposed alongside.
+        _voiceCommandService?.Dispose();
+        _voiceCommandService = null;
 
         // HttpClient AFTER the service so any final in-flight request
         // the heartbeat-loop kicked off has a chance to complete or

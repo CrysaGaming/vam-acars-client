@@ -95,4 +95,37 @@ public sealed class Preferences
     /// pilot can copy the exact URL into OBS without guessing.
     /// </summary>
     public bool OverlayServerEnabled { get; init; } = false;
+
+    /// <summary>
+    /// Welle E / E2 — voice-commands toggle. When true, the tray-app
+    /// constructs a <c>VoiceCommandService</c> that listens on the
+    /// default microphone for a small grammar of "VAM …" phrases and
+    /// drives the UI in response.
+    ///
+    /// # Supported phrases (v1 MVP)
+    ///
+    /// - "VAM Status"      → speaks current ConnectionStatus + heartbeats
+    /// - "VAM Verbinden"   → triggers Connect (gated on PreflightComplete)
+    /// - "VAM Trennen"     → triggers Disconnect
+    /// - "VAM Flugzeug"    → speaks detected aircraft type + registration
+    ///
+    /// # Why German wake-word
+    ///
+    /// The grammar is loaded with the de-DE recognizer so pilot accents
+    /// are correctly transcribed; "VAM" as wake-word survives the
+    /// transition (it's a single short syllable that scores reliably).
+    /// If a pilot has only en-US installed, the recognizer falls through
+    /// to en-US and the same wake-word is used — accuracy drops on the
+    /// German command-words but the most-used "Status" / "Connect" still
+    /// land. We don't gate on language-pack availability; if no
+    /// recognizer can be built, the service logs a warning and stays
+    /// idle (the checkbox stays ticked but produces nothing).
+    ///
+    /// # Privacy
+    ///
+    /// Audio never leaves the machine. <c>System.Speech</c> uses the
+    /// in-box SAPI 5.4 recognizer, no cloud round-trip. Default off
+    /// because microphone-listening surprises users; opt-in is explicit.
+    /// </summary>
+    public bool VoiceCommandsEnabled { get; init; } = false;
 }
