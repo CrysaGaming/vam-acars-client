@@ -686,6 +686,13 @@ public partial class MainWindow : Window
         var raw = OfpInputBox.Text;
         var app = (App)Application.Current;
 
+        // Welle B / B5: clear any previous OFP-suggestion banner before
+        // each fresh import. If the new OFP has no callsign, or its
+        // callsign matches a different route, the banner needs to
+        // reflect the NEW import — a stale banner from the previous
+        // paste would be misleading.
+        app.State.ClearOfpSuggestion();
+
         if (string.IsNullOrWhiteSpace(raw))
         {
             app.State.StatusMessage = "Bitte OFP-text einfügen.";
@@ -708,6 +715,55 @@ public partial class MainWindow : Window
         {
             CallsignBox.Text = parsed.Callsign;
             filled.Add("Callsign");
+
+            // ─── Welle B / B5: route-suggestion lookup ───────────────
+            //
+            // Compare the parsed callsign against the cached airline-
+            // routes catalogue. Three outcomes:
+            //
+            //   - Empty cache (catalogue not fetched yet, fetch failed,
+            //     or solo pilot)         → skip silently. No banner.
+            //   - Match found             → State.OfpMatchedRoute set →
+            //     green "Buchung erstellen" banner via XAML binding.
+            //   - No match                → State.OfpNoMatchWarning set
+            //     → amber info banner via XAML binding.
+            //
+            // Lookup is case-insensitive trim on FlightNumber. The
+            // airline-routes endpoint returns routes ordered by
+            // flightNumber asc, so a linear scan is fine at the
+            // expected scale (a few hundred routes per airline).
+            //
+            // Done inside the Callsign branch so we don't run the
+            // lookup when the parser found no callsign — the OFP is
+            // then unmatched-by-construction, and the empty state is
+            // less misleading than a no-match warning would be.
+            var callsignNeedle = parsed.Callsign.Trim();
+            if (app.State.AirlineRoutes.Count > 0)
+            {
+                AirlineRoute? matched = null;
+                foreach (var route in app.State.AirlineRoutes)
+                {
+                    if (string.Equals(
+                            route.FlightNumber?.Trim(),
+                            callsignNeedle,
+                            StringComparison.OrdinalIgnoreCase))
+                    {
+                        matched = route;
+                        break;
+                    }
+                }
+
+                if (matched is not null)
+                {
+                    app.State.OfpMatchedRoute = matched;
+                }
+                else
+                {
+                    app.State.OfpNoMatchWarning =
+                        $"Route {callsignNeedle} ist nicht in deiner Airline. " +
+                        "Wende dich an den Admin für eine Genehmigung.";
+                }
+            }
         }
         if (!string.IsNullOrWhiteSpace(parsed.DepartureIcao))
         {
@@ -760,5 +816,98 @@ public partial class MainWindow : Window
         }
 
         app.State.StatusMessage = status;
+    }
+
+    /// <summary>
+    /// "Buchung erstellen" button on the OFP-suggestion match banner
+    /// (Welle B / B5). Fires when the user has paste-imported an OFP
+    /// whose callsign matched a route in their airline's catalogue,
+    /// and they've decided to commit to a Booking against it.
+    ///
+    /// # Flow
+    ///
+    /// 1. Snapshot the matched route from state (set during OnOfpImportClick).
+    /// 2. Call <see cref="Models.AcarsClientService.CreateBookingFromRouteAsync"/>
+    ///    which POSTs /api/acars/create-booking and returns the
+    ///    structured result (success, policy-failure, or null on
+    ///    transport/auth failure).
+    /// 3. Branch on the result:
+    ///    - Success      → status message confirms booking-id, then
+    ///                     clears the banner (booking is now active,
+    ///                     the next Verbinden cycle picks it up via
+    ///                     FetchActiveBookingAsync).
+    ///    - Policy-fail  → status message shows the server's German
+    ///                     message verbatim. Banner stays (the user
+    ///                     might want to retry or read the warning
+    ///                     again). For active-booking-exists the
+    ///                     existing-booking-id is logged but not
+    ///                     surfaced — v2 could offer a "switch to
+    ///                     existing" affordance.
+    ///    - null         → status message asks the user to retry.
+    ///                     Banner stays.
+    ///
+    /// # State
+    ///
+    /// IsCreatingBookingFromOfp is flipped true inside the service
+    /// for the duration of the POST; the XAML disables the button
+    /// while that flag is set so a double-click can't fire two
+    /// concurrent POSTs.
+    ///
+    /// Async-void: canonical UI event handler. The service swallows
+    /// + logs transport exceptions; we don't await this method.
+    /// </summary>
+    private async void OnCreateBookingFromOfpClick(object sender, RoutedEventArgs e)
+    {
+        var app = (App)Application.Current;
+        var service = app.Service;
+        if (service is null) return; // shouldn't happen post-OnStartup
+
+        var matched = app.State.OfpMatchedRoute;
+        if (matched is null)
+        {
+            // Defensive: the button is only visible when
+            // HasOfpMatchedRoute is true, but a fast click-through
+            // a stale state could theoretically race. Just no-op.
+            return;
+        }
+
+        // Snapshot id locally so a concurrent ClearOfpSuggestion
+        // (from a fresh OFP-import landing while this POST is in
+        // flight) doesn't null-deref us mid-await.
+        var routeId = matched.Id;
+        var routeLabel = $"{matched.FlightNumber} ({matched.DepartureIcao}→{matched.ArrivalIcao})";
+
+        var result = await service.CreateBookingFromRouteAsync(routeId);
+
+        if (result is null)
+        {
+            // Transport / 401 / unexpected failure. Service has already
+            // logged the details; surface a brief message so the user
+            // knows the click didn't take effect.
+            app.State.StatusMessage =
+                $"Buchung {routeLabel} konnte nicht erstellt werden — Verbindungsproblem. Bitte erneut versuchen.";
+            return;
+        }
+
+        if (result.Booking is not null)
+        {
+            // Happy path. Booking is committed; clear the suggestion
+            // banner so the FLUG-KONTEXT area returns to its quiet
+            // resting state, and surface a confirmation footer.
+            app.State.StatusMessage =
+                $"Buchung {result.Booking.FlightNumber} ({result.Booking.DepartureIcao}→{result.Booking.ArrivalIcao}) erstellt. Beim nächsten Verbinden wird sie automatisch geladen.";
+            app.State.ClearOfpSuggestion();
+            return;
+        }
+
+        // Policy-failure path. result.Message is the server's
+        // human-readable German explanation — surface verbatim.
+        // Banner stays so the user can read it alongside the
+        // footer status. Empty-message defense: fallback to a
+        // generic message that names the route, so the user at
+        // least knows what was attempted.
+        app.State.StatusMessage = !string.IsNullOrWhiteSpace(result.Message)
+            ? result.Message
+            : $"Buchung {routeLabel} konnte nicht erstellt werden ({result.Error ?? "unbekannter Fehler"}).";
     }
 }

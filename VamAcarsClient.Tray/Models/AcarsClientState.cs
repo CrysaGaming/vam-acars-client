@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
+using VamAcarsClient.Core;
 
 namespace VamAcarsClient.Tray.Models;
 
@@ -853,6 +854,208 @@ public class AcarsClientState : INotifyPropertyChanged
         ActiveBookingArrivalIcao = null;
         ActiveBookingAircraftType = null;
         ActiveBookingAircraftRegistration = null;
+    }
+
+    // ─── Airline-routes catalogue (Welle B / B5) ─────────────────────
+    //
+    // Per-airline list of routes, fetched once at app-startup after a
+    // token is present, cached in-memory for the lifetime of the
+    // process. The OFP-import handler does an in-memory callsign
+    // lookup against this cache to decide whether to surface a
+    // "Buchung erstellen" button (match) or an "Admin kontaktieren"
+    // warning (no match).
+    //
+    // # Lifecycle
+    //
+    // - Fetched by VamAcarsClient.Tray.Models.AcarsClientService.
+    //   FetchAirlineRoutesAsync from App.OnStartup, immediately after
+    //   the pairing-state turns paired (HasToken=true).
+    // - Restart of the tray app re-fetches. Mid-session route additions
+    //   by airline-admins are NOT auto-picked-up — acceptable v1 since
+    //   route changes are rare and admin-driven; the pilot can restart
+    //   the app to pull fresh.
+    // - Solo pilots (server returns { routes: [] }) get an empty
+    //   collection. OFP-import then skips the lookup entirely and
+    //   shows neither match-nor-warn banner — same as if the fetch
+    //   failed transport-wise. Acceptable: free-flight users don't
+    //   need airline-route suggestions.
+    //
+    // # Why ObservableCollection
+    //
+    // Matches the existing INPC pattern (PreflightChecklist). XAML
+    // bindings against AirlineRoutes don't currently exist (lookup is
+    // imperative in OnOfpImportClick), but the type future-proofs an
+    // eventual route-picker dropdown without rewriting state.
+    //
+    // # Why no per-callsign helper lives here
+    //
+    // The match lookup is "find the entry where FlightNumber matches
+    // the parsed callsign, case-insensitive". Implementing that as a
+    // method on the state class would bleed UI concerns (whitespace
+    // trim, case folding) into the state. The MainWindow OFP-import
+    // handler does the lookup inline — short, focused, and the state
+    // stays a pure data carrier.
+
+    /// <summary>
+    /// In-memory cache of the paired user's airline-routes catalogue.
+    /// Populated by FetchAirlineRoutesAsync at app-startup; empty
+    /// (count=0) when not yet fetched, when the fetch failed, or
+    /// for solo pilots without an airline. See section docstring
+    /// for lifecycle rules.
+    /// </summary>
+    public ObservableCollection<AirlineRoute> AirlineRoutes { get; } =
+        new ObservableCollection<AirlineRoute>();
+
+    private bool _isFetchingAirlineRoutes;
+    /// <summary>
+    /// True while the /api/acars/airline-routes fetch is in flight.
+    /// Currently used only for diagnostic logging; no UI surface binds
+    /// against it because the fetch happens at startup and is silent
+    /// to the user (success = routes are there; failure = no
+    /// suggestions, same as solo-pilot empty state).
+    /// </summary>
+    public bool IsFetchingAirlineRoutes
+    {
+        get => _isFetchingAirlineRoutes;
+        set => SetField(ref _isFetchingAirlineRoutes, value);
+    }
+
+    /// <summary>
+    /// Replace the cached routes atomically. Single method rather than
+    /// Clear() + Add() loop so any binding observing the collection
+    /// sees one CollectionChanged event burst rather than N+1.
+    ///
+    /// Called from FetchAirlineRoutesAsync on a successful fetch.
+    /// Always runs on the UI thread (the caller marshals via
+    /// SetStateAsync), so the ObservableCollection mutations are
+    /// safe for XAML bindings.
+    /// </summary>
+    public void ReplaceAirlineRoutes(IEnumerable<AirlineRoute> routes)
+    {
+        AirlineRoutes.Clear();
+        foreach (var route in routes)
+        {
+            AirlineRoutes.Add(route);
+        }
+    }
+
+    /// <summary>
+    /// Atomically clear the route-cache. Currently called on UnpairAsync
+    /// so a fresh pairing fetches a fresh catalogue rather than serving
+    /// the previous user's airline. Cheap; no-op when already empty.
+    /// </summary>
+    public void ClearAirlineRoutes()
+    {
+        if (AirlineRoutes.Count == 0) return;
+        AirlineRoutes.Clear();
+    }
+
+    // ─── OFP-suggestion banner (Welle B / B5) ────────────────────────
+    //
+    // Transient UI state set by MainWindow.OnOfpImportClick after the
+    // callsign-vs-AirlineRoutes lookup completes. Three mutually-
+    // exclusive states encoded by the combination of OfpMatchedRoute
+    // and OfpNoMatchWarning:
+    //
+    //   - both null      → no banner (no OFP imported yet this session,
+    //                      or imported but parser found no callsign,
+    //                      or AirlineRoutes is empty so lookup skipped)
+    //   - matched set    → green "✓ Route verfügbar" banner with the
+    //                      "Buchung erstellen" button
+    //   - warning set    → amber "⚠ Route nicht in Airline" banner,
+    //                      no action button (just an info hint)
+    //
+    // The "imported callsign" string is held in OfpImportedCallsign
+    // for both states so the warning banner can name the missing
+    // route ("NGN945 nicht in deiner Airline"). Null when no callsign
+    // was extracted.
+    //
+    // # Why three properties rather than an enum + payload struct
+    //
+    // WPF bindings prefer flat property surfaces — each banner row
+    // can bind Visibility directly to "Matched is not null" or
+    // "Warning is not null" without a value-converter on an enum.
+    // The trade-off is that the OnOfpImportClick handler has to
+    // clear the OTHER property when setting one, but that's a
+    // one-liner each side.
+
+    private AirlineRoute? _ofpMatchedRoute;
+    /// <summary>
+    /// The airline-route that matched the most-recently-imported OFP's
+    /// callsign. Non-null only when a match was found AND the user has
+    /// not since cleared the OFP banner. Drives the green "Buchung
+    /// erstellen" banner in the FLUG-KONTEXT card.
+    /// </summary>
+    public AirlineRoute? OfpMatchedRoute
+    {
+        get => _ofpMatchedRoute;
+        set
+        {
+            if (SetField(ref _ofpMatchedRoute, value))
+            {
+                PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(HasOfpMatchedRoute)));
+            }
+        }
+    }
+
+    /// <summary>
+    /// Convenience bool for XAML Visibility bindings — true iff
+    /// OfpMatchedRoute is non-null. Computed; PropertyChanged fired
+    /// from the OfpMatchedRoute setter.
+    /// </summary>
+    public bool HasOfpMatchedRoute => _ofpMatchedRoute is not null;
+
+    private string? _ofpNoMatchWarning;
+    /// <summary>
+    /// Free-text warning message when an OFP was imported but its
+    /// callsign did NOT match any airline-route. Example: "Route NGN945
+    /// nicht in deiner Airline." Non-null only when a no-match occurred
+    /// AND the user has not since cleared it. Drives the amber warning
+    /// banner.
+    /// </summary>
+    public string? OfpNoMatchWarning
+    {
+        get => _ofpNoMatchWarning;
+        set
+        {
+            if (SetField(ref _ofpNoMatchWarning, value))
+            {
+                PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(HasOfpNoMatchWarning)));
+            }
+        }
+    }
+
+    /// <summary>
+    /// Convenience bool for XAML Visibility bindings — true iff
+    /// OfpNoMatchWarning is non-empty. PropertyChanged fired from
+    /// the OfpNoMatchWarning setter.
+    /// </summary>
+    public bool HasOfpNoMatchWarning => !string.IsNullOrWhiteSpace(_ofpNoMatchWarning);
+
+    private bool _isCreatingBookingFromOfp;
+    /// <summary>
+    /// True while POST /api/acars/create-booking is in flight. Drives
+    /// the disabled state of the "Buchung erstellen" button and
+    /// flips it to a "Erstellt..." label so the user sees the click
+    /// registered. Flipped true at the top of the button handler,
+    /// false in the finally.
+    /// </summary>
+    public bool IsCreatingBookingFromOfp
+    {
+        get => _isCreatingBookingFromOfp;
+        set => SetField(ref _isCreatingBookingFromOfp, value);
+    }
+
+    /// <summary>
+    /// Clear both OFP-suggestion fields. Called from OnOfpImportClick
+    /// at the start of a fresh import (so the previous banner doesn't
+    /// linger if the new import has no callsign), and after a
+    /// successful create-booking POST.
+    /// </summary>
+    public void ClearOfpSuggestion()
+    {
+        OfpMatchedRoute = null;
+        OfpNoMatchWarning = null;
     }
 
     // ─── Crash-recovery (option #13) ─────────────────────────────────

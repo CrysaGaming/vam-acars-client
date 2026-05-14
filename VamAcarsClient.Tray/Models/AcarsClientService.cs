@@ -982,6 +982,208 @@ public sealed class AcarsClientService : IDisposable
     }
 
     /// <summary>
+    /// Fetch the paired user's airline-routes catalogue via
+    /// <see cref="AirlineRoutesService"/> and project the result onto
+    /// <see cref="AcarsClientState.AirlineRoutes"/>.
+    ///
+    /// # When called
+    ///
+    /// Once at App.OnStartup after a token is present (paired state).
+    /// Not re-fetched mid-session: route-catalogue changes are rare
+    /// and admin-driven, so a tray-app restart is the v1 refresh
+    /// mechanism. UnpairAsync clears the cache so a fresh pairing
+    /// starts clean.
+    ///
+    /// # Return semantics
+    ///
+    /// Three outcomes (mirroring FetchActiveBookingAsync's contract):
+    /// - true + state populated → fetch succeeded. Routes may be empty
+    ///   if the user's airline has none (or the user is solo).
+    /// - false + state cleared  → 401 from server. Caller (App.xaml.cs)
+    ///   should NOT trigger re-pair from here — the active-booking
+    ///   fetch right after will surface the 401 with the right UX.
+    ///   This method just clears the cache and returns.
+    /// - false + state left as-is → transport / parse failure. The
+    ///   OFP-suggestion feature degrades gracefully (no banner shown
+    ///   on next import); pilot loses suggestions for this session.
+    ///
+    /// # Threading
+    ///
+    /// HTTP call on the calling thread, state mutations via
+    /// SetStateAsync (which marshals to UI dispatcher). The
+    /// IsFetchingAirlineRoutes flag brackets the actual network IO
+    /// for diagnostic logging — no UI binding currently watches it
+    /// because the fetch is silent to the user.
+    ///
+    /// # Why this method lives on AcarsClientService
+    ///
+    /// The Core AirlineRoutesService is the bare HTTP/JSON binding —
+    /// re-usable from Cli, future bot integrations, tests. This wrapper
+    /// adds WPF concerns (state projection, UI thread marshalling).
+    /// Same pattern as FetchActiveBookingAsync wrapping ActiveBookingService.
+    /// </summary>
+    public async Task<bool> FetchAirlineRoutesAsync(CancellationToken ct = default)
+    {
+        var token = _tokenStore.TryLoad();
+        if (token is null)
+        {
+            _logger.LogWarning("FetchAirlineRoutesAsync: no token in store — skipping");
+            return false;
+        }
+
+        await SetStateAsync(s => s.IsFetchingAirlineRoutes = true);
+
+        try
+        {
+            var svc = new AirlineRoutesService(_http);
+            var response = await svc.FetchAsync(token, ct);
+
+            // 401 → svc returns null. Clear any stale routes so the
+            // OFP-import lookup doesn't compare against the previous
+            // user's airline. We don't trigger re-pair here — the
+            // active-booking fetch right after has its own 401 path
+            // with the right messaging.
+            if (response is null)
+            {
+                _logger.LogWarning(
+                    "FetchAirlineRoutesAsync: token rejected (401) — clearing airline-routes cache");
+                await SetStateAsync(s => s.ClearAirlineRoutes());
+                return false;
+            }
+
+            // Project onto state inside the dispatcher so the
+            // ObservableCollection mutation fires CollectionChanged on
+            // the UI thread (required for XAML bindings).
+            await SetStateAsync(s => s.ReplaceAirlineRoutes(response.Routes));
+
+            _logger.LogInformation(
+                "FetchAirlineRoutesAsync: loaded {Count} airline-route(s)",
+                response.Routes.Count);
+            return true;
+        }
+        catch (OperationCanceledException)
+        {
+            _logger.LogDebug("FetchAirlineRoutesAsync: cancelled by caller");
+            return false;
+        }
+        catch (Exception ex)
+        {
+            // Transport / parse failure. Leave the existing cache
+            // alone — a stale cache is more useful than an empty one
+            // if this is just a transient network hiccup. Next tray
+            // restart will refresh.
+            _logger.LogWarning(ex, "FetchAirlineRoutesAsync failed");
+            return false;
+        }
+        finally
+        {
+            await SetStateAsync(s => s.IsFetchingAirlineRoutes = false);
+        }
+    }
+
+    /// <summary>
+    /// POST /api/acars/create-booking via
+    /// <see cref="CreateBookingService"/>. Used by the OFP-suggestion
+    /// banner's "Buchung erstellen" button.
+    ///
+    /// # Return value
+    ///
+    /// Returns the full <see cref="CreateBookingResult"/> on a successful
+    /// HTTP exchange (200 OR structured 4xx) so the caller can branch on
+    /// .Booking vs .Error and surface the right message. Returns null
+    /// on transport failure or 401 — caller treats both as "couldn't
+    /// reach server, please retry".
+    ///
+    /// # State coupling
+    ///
+    /// Flips <see cref="AcarsClientState.IsCreatingBookingFromOfp"/> true
+    /// on entry, false in finally. The button binding disables itself
+    /// for the duration so the user can't double-click. We deliberately
+    /// don't write the result onto state here — the caller (MainWindow)
+    /// is the right place to decide what status-message to surface and
+    /// whether to clear the OFP-suggestion banner.
+    ///
+    /// # Why a thin wrapper rather than inline in OnOfpImportClick
+    ///
+    /// Same per-endpoint pattern as FetchActiveBookingAsync /
+    /// FetchAirlineRoutesAsync. Putting the token-fetch + service
+    /// construction + flag-flip ceremony in the click handler would
+    /// duplicate plumbing every time a similar action gets added.
+    /// </summary>
+    public async Task<CreateBookingResult?> CreateBookingFromRouteAsync(
+        string routeId,
+        CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(routeId))
+        {
+            _logger.LogWarning("CreateBookingFromRouteAsync: empty routeId — skipping");
+            return null;
+        }
+
+        var token = _tokenStore.TryLoad();
+        if (token is null)
+        {
+            _logger.LogWarning("CreateBookingFromRouteAsync: no token in store — skipping");
+            return null;
+        }
+
+        await SetStateAsync(s => s.IsCreatingBookingFromOfp = true);
+
+        try
+        {
+            var svc = new CreateBookingService(_http);
+            var result = await svc.CreateAsync(token, routeId, ct);
+
+            if (result is null)
+            {
+                // 401 — caller treats as transport-class failure; we
+                // don't trigger re-pair from here (FetchActiveBookingAsync's
+                // probe on the next Verbinden cycle is the right path
+                // for that).
+                _logger.LogWarning(
+                    "CreateBookingFromRouteAsync: token rejected (401) for routeId {RouteId}",
+                    routeId);
+                return null;
+            }
+
+            // Log both branches at info — pilot-initiated booking
+            // creation is a noteworthy event in the diagnostic log,
+            // regardless of outcome.
+            if (result.Booking is not null)
+            {
+                _logger.LogInformation(
+                    "CreateBookingFromRouteAsync: created booking {BookingId} ({Flight} {Dep}→{Arr})",
+                    result.Booking.Id,
+                    result.Booking.FlightNumber,
+                    result.Booking.DepartureIcao,
+                    result.Booking.ArrivalIcao);
+            }
+            else
+            {
+                _logger.LogInformation(
+                    "CreateBookingFromRouteAsync: server returned policy-failure for routeId {RouteId}: {Error}",
+                    routeId, result.Error ?? "(no error code)");
+            }
+
+            return result;
+        }
+        catch (OperationCanceledException)
+        {
+            _logger.LogDebug("CreateBookingFromRouteAsync: cancelled by caller");
+            return null;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "CreateBookingFromRouteAsync failed for routeId {RouteId}", routeId);
+            return null;
+        }
+        finally
+        {
+            await SetStateAsync(s => s.IsCreatingBookingFromOfp = false);
+        }
+    }
+
+    /// <summary>
     /// User-initiated re-pair. Tears down any active session, deletes the
     /// stored DPAPI-encrypted token, and resets HasToken so the UI shows
     /// "Nicht gepaart". The user then runs the CLI's pair command (or a
@@ -1018,6 +1220,17 @@ public sealed class AcarsClientService : IDisposable
             s.HasToken = false;
             s.ConnectionStatus = ConnectionStatus.Disconnected;
             s.StatusMessage = "Gerät entkoppelt. Erneut über die CLI pairen, dann verbinden.";
+
+            // Welle B / B5: clear the cached airline-routes catalogue
+            // so a fresh pairing fetches the new user's airline rather
+            // than serving stale entries from the previous pairing.
+            // OfpSuggestion banner state is also cleared — a lingering
+            // matched-route banner from the previous user would be
+            // confusing and could prompt a create-booking against the
+            // wrong airline (the server would reject it, but cleaner
+            // to clear the UI affordance entirely).
+            s.ClearAirlineRoutes();
+            s.ClearOfpSuggestion();
         });
     }
 

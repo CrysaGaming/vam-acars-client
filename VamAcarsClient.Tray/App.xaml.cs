@@ -449,6 +449,29 @@ public partial class App : Application
             State,
             Dispatcher);
 
+        // ─── Welle B / B5: lazy-fetch airline-routes catalogue ────────
+        //
+        // Pulls the paired user's airline-routes list and caches it on
+        // State.AirlineRoutes so OFP-import can do an instant in-memory
+        // lookup. Gated on HasToken so unpaired pilots don't fire a
+        // pointless request that would just 401.
+        //
+        // Fire-and-forget on a background task: blocking OnStartup
+        // until the fetch returns would delay window-show and tray-
+        // icon registration by however long the round-trip takes,
+        // which is poor UX on slow networks. The fetch is silent —
+        // success = routes are there; failure = no suggestions banner
+        // on next OFP-import, same as solo-pilot empty state. Either
+        // way the rest of the tray works.
+        //
+        // We don't await the task; the discard makes that explicit
+        // and silences IDE warnings. Errors inside the task are
+        // logged by FetchAirlineRoutesAsync's catch blocks.
+        if (State.HasToken)
+        {
+            _ = _acarsService.FetchAirlineRoutesAsync();
+        }
+
         // ─── Tray icon instantiation ──────────────────────────────────
         // Pull the XAML-declared icon out of Application.Resources and
         // pin it to a field. FindResource alone constructs the

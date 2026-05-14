@@ -800,11 +800,149 @@
                                 </Style>
                             </Button.Style>
                         </Button>
+
+                        <!--
+                            Welle B / B5 — OFP-suggestion match banner.
+                            Visible when OnOfpImportClick found a route
+                            in State.AirlineRoutes that matched the
+                            parsed callsign. Surfaces the route's
+                            details and a "Buchung erstellen" button
+                            that POSTs /api/acars/create-booking.
+
+                            Visibility bound to HasOfpMatchedRoute on
+                            the state; collapses cleanly when no match
+                            is staged (which is most of the time).
+
+                            Layout: tinted green background (AccentGreen
+                            at 18% alpha so the brand colour shines
+                            through without overwhelming the text), a
+                            short headline + route summary on the left,
+                            and the action button on the right. Same
+                            two-line structure as the recovery banner
+                            and the network-recovered flash so the user
+                            recognises this as "transient info + one
+                            action".
+                        -->
+                        <Border Margin="0,12,0,0"
+                                Padding="12,10"
+                                CornerRadius="4"
+                                Background="#2D5DD594"
+                                BorderBrush="{StaticResource AccentGreen}"
+                                BorderThickness="1"
+                                Visibility="{Binding HasOfpMatchedRoute, Converter={StaticResource BoolToVis}}">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel Grid.Column="0" VerticalAlignment="Center">
+                                    <TextBlock FontSize="12"
+                                               FontWeight="SemiBold"
+                                               Foreground="{StaticResource AccentGreen}"
+                                               Text="✓ Route in deiner Airline verfügbar" />
+                                    <TextBlock Margin="0,2,0,0"
+                                               FontSize="11"
+                                               Foreground="{StaticResource TextPrimary}"
+                                               TextWrapping="Wrap">
+                                        <Run Text="{Binding OfpMatchedRoute.FlightNumber, FallbackValue=''}" FontWeight="SemiBold" />
+                                        <Run Text=" · " />
+                                        <Run Text="{Binding OfpMatchedRoute.DepartureIcao, FallbackValue=''}" />
+                                        <Run Text="→" />
+                                        <Run Text="{Binding OfpMatchedRoute.ArrivalIcao, FallbackValue=''}" />
+                                    </TextBlock>
+                                </StackPanel>
+
+                                <!--
+                                    Action button. IsEnabled inverted via
+                                    DataTrigger so the button visibly
+                                    disables itself for the duration of
+                                    the POST (IsCreatingBookingFromOfp =
+                                    true on entry, false in finally).
+                                    Without the trigger a fast double-
+                                    click could race the service's flag-
+                                    flip.
+                                -->
+                                <Button Grid.Column="1"
+                                        x:Name="CreateBookingFromOfpButton"
+                                        Click="OnCreateBookingFromOfpClick"
+                                        VerticalAlignment="Center"
+                                        Margin="12,0,0,0"
+                                        Padding="14,6"
+                                        Background="{StaticResource AccentGreen}"
+                                        Foreground="#0F1A14"
+                                        FontSize="12"
+                                        FontWeight="SemiBold"
+                                        BorderThickness="0"
+                                        Cursor="Hand"
+                                        Content="Buchung erstellen"
+                                        ToolTip="Erstellt eine Booking gegen die importierte Route. Beim nächsten Verbinden wird sie automatisch geladen.">
+                                    <Button.Template>
+                                        <ControlTemplate TargetType="Button">
+                                            <Border Background="{TemplateBinding Background}"
+                                                    BorderBrush="{TemplateBinding BorderBrush}"
+                                                    BorderThickness="{TemplateBinding BorderThickness}"
+                                                    CornerRadius="4"
+                                                    Padding="{TemplateBinding Padding}">
+                                                <ContentPresenter HorizontalAlignment="Center"
+                                                                  VerticalAlignment="Center"
+                                                                  TextElement.Foreground="{TemplateBinding Foreground}" />
+                                            </Border>
+                                        </ControlTemplate>
+                                    </Button.Template>
+                                    <Button.Style>
+                                        <Style TargetType="Button">
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding IsCreatingBookingFromOfp}" Value="True">
+                                                    <Setter Property="IsEnabled" Value="False" />
+                                                    <Setter Property="Content" Value="Erstellt …" />
+                                                    <Setter Property="Opacity" Value="0.7" />
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </Button.Style>
+                                </Button>
+                            </Grid>
+                        </Border>
+
+                        <!--
+                            Welle B / B5 — OFP-suggestion no-match warning.
+                            Visible when OnOfpImportClick found NO route
+                            matching the parsed callsign (and the
+                            airline-routes catalogue isn't empty —
+                            empty catalogue means we can't make a
+                            statement either way).
+
+                            Info-only banner: no action button, just the
+                            warning text. Pilot can still manually edit
+                            the form and click Verbinden for a free-
+                            flight session; the warning is a hint, not
+                            a hard block.
+
+                            Tinted amber via AccentYellow at low alpha,
+                            same layout style as the match banner for
+                            visual consistency.
+                        -->
+                        <Border Margin="0,12,0,0"
+                                Padding="12,10"
+                                CornerRadius="4"
+                                Background="#2DF5C451"
+                                BorderBrush="{StaticResource AccentYellow}"
+                                BorderThickness="1"
+                                Visibility="{Binding HasOfpNoMatchWarning, Converter={StaticResource BoolToVis}}">
+                            <StackPanel>
+                                <TextBlock FontSize="12"
+                                           FontWeight="SemiBold"
+                                           Foreground="{StaticResource AccentYellow}"
+                                           Text="⚠ Route nicht in deiner Airline" />
+                                <TextBlock Margin="0,2,0,0"
+                                           FontSize="11"
+                                           Foreground="{StaticResource TextPrimary}"
+                                           TextWrapping="Wrap"
+                                           Text="{Binding OfpNoMatchWarning}" />
+                            </StackPanel>
+                        </Border>
                     </StackPanel>
                 </Border>
-
-                <!--
-                    Pre-flight checklist card (option #10). Discipline-
                     tool + connect-gate. The user ticks each item before
                     clicking Verbinden; the PrimaryButton's
                     MultiDataTrigger blocks the button while the
