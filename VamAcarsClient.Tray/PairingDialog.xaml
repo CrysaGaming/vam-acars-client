@@ -63,8 +63,7 @@
             out-of-the-box auf Hyperlink.NavigateUri ein Process.Start
             macht — das muss der host machen.
         -->
-        <Border Style="{StaticResource ResourceKey={x:Null}}"
-                Background="{StaticResource BgSecondary}"
+        <Border Background="{StaticResource BgSecondary}"
                 BorderBrush="{StaticResource BorderMuted}"
                 BorderThickness="1"
                 CornerRadius="6"

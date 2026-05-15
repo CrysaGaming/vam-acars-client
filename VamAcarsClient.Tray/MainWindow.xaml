@@ -943,6 +943,9 @@
                         </Border>
                     </StackPanel>
                 </Border>
+
+                <!--
+                    Pre-flight checklist card (option #10). Discipline-
                     tool + connect-gate. The user ticks each item before
                     clicking Verbinden; the PrimaryButton's
                     MultiDataTrigger blocks the button while the
